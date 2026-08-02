@@ -7,10 +7,10 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>GeoUkur GPS</title>
+  <title>GeoUkur GPS — DEMO</title>
   <meta name="description" content="Pengukuran lahan berbasis GPS dengan Google Sheets sebagai basis data.">
 
-  <link rel="stylesheet" href="lib/leaflet.css">
+  <link rel="stylesheet" href="../lib/leaflet.css">
   <link rel="manifest" href="manifest.webmanifest">
 <style>
 /* ============================================================
@@ -684,14 +684,14 @@ textarea.inp{min-height:72px;resize:vertical}
     <div id="lbKeterangan" class="lb-keterangan"></div>
   </div>
 
-  <script src="lib/leaflet.js"></script>
+  <script src="../lib/leaflet.js"></script>
   <script>if(!window.L){document.write('<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"><\/script>');}</script>
     <script>
     /* ====================================================================
        ISI BAGIAN INI SEBELUM MENGUNGGAH KE GITHUB
        GAS_API_URL = URL deployment Web App Apps Script Anda (akhiran /exec).
        ==================================================================== */
-    window.GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwESav0UT7xNOLepoxBC-PehGBU10EHk2MNssHXlS668_vN76IzgxeFuIPIbOw-39Btfw/exec'; // contoh: 'https://script.google.com/macros/s/AKfycb.../exec'
+    window.GAS_API_URL = ''; // contoh: 'https://script.google.com/macros/s/AKfycb.../exec'
 
     window.BOOT = {
       app_name: 'GeoUkur GPS',
@@ -705,6 +705,369 @@ textarea.inp{min-height:72px;resize:vertical}
     };
     window.APP_VERSION = '4.2.1';
   </script>
+<script>window.DEMO = true;</script>
+<script>
+/**
+ * File: Demo.html — MESIN MODE DEMO.
+ *
+ * Hanya disertakan pada build demo (web/demo/index.html), tidak ikut di versi produksi.
+ * Seluruh permintaan yang biasanya pergi ke Apps Script dilayani di sini memakai data
+ * contoh yang disimpan di memori + localStorage, sehingga demo bisa dibuka siapa pun
+ * tanpa server, tanpa login Google, dan tanpa menyentuh data asli.
+ *
+ * Batasan yang sengaja dipasang (lihat DEMO_BATAS): maksimal bidang, ekspor & cetak
+ * dimatikan. Tujuannya memperlihatkan alur kerja, bukan menggantikan versi berbayar.
+ */
+(function () {
+  var DEMO_BATAS = {
+    maks_lahan: 5,
+    fitur_mati: ['exportGeoJSON', 'exportKML', 'exportGPX', 'exportCSV', 'beritaAcaraPdf',
+                 'simpanLogo', 'hapusLogo', 'bersihkanPesan', 'paksaKeluar', 'hapusPengguna',
+                 'tambahPengguna', 'ujiWa']
+  };
+
+  var KUNCI = 'gu_demo_db';
+  var mulai = -7.3260, mulaiLng = 108.2200;
+
+  function uid(p) { return p + '_' + Math.random().toString(36).slice(2, 9); }
+  function nowISO() { return new Date().toISOString().replace(/\.\d+Z$/, '+07:00'); }
+
+  /** Bidang contoh: persegi ~1 ha di sekitar Tasikmalaya. */
+  function kotak(lat, lng, meter, id) {
+    var d = meter / 111320, dl = meter / (111320 * Math.cos(lat * Math.PI / 180));
+    var sudut = [[lat, lng], [lat, lng + dl], [lat - d, lng + dl], [lat - d, lng]];
+    return sudut.map(function (s, i) {
+      return {
+        titik_id: id + '_t' + (i + 1), lahan_id: id, urutan: i + 1,
+        kode_patok: 'T' + (i + 1), lat: s[0], lng: s[1],
+        akurasi: 3 + Math.random() * 2, sumber: 'gps', catatan: '', waktu: nowISO()
+      };
+    });
+  }
+
+  function dbBaru() {
+    var l1 = 'lhn_demo1', l2 = 'lhn_demo2', l3 = 'lhn_demo3';
+    return {
+      lahan: [
+        { lahan_id: l1, nama: 'Kebun Contoh A', pemilik: 'H. Sudirman', no_sertifikat: 'SHM 1204',
+          jenis: 'Perkebunan', status: 'Aktif', desa: 'Cibeureum', kecamatan: 'Tamansari',
+          kabupaten: 'Tasikmalaya', provinsi: 'Jawa Barat', catatan: 'Bidang contoh untuk demo.',
+          dibuat_pada: nowISO(), oleh: 'demo' },
+        { lahan_id: l2, nama: 'Sawah Contoh B', pemilik: 'Ibu Ratna', no_sertifikat: 'SHM 0871',
+          jenis: 'Pertanian', status: 'Draf', desa: 'Cibeureum', kecamatan: 'Tamansari',
+          kabupaten: 'Tasikmalaya', provinsi: 'Jawa Barat', catatan: '',
+          dibuat_pada: nowISO(), oleh: 'demo' },
+        { lahan_id: l3, nama: 'Pekarangan Contoh C', pemilik: 'Bapak Asep', no_sertifikat: '-',
+          jenis: 'Pemukiman', status: 'Selesai', desa: 'Sukamaju', kecamatan: 'Tamansari',
+          kabupaten: 'Tasikmalaya', provinsi: 'Jawa Barat', catatan: 'Sudah diverifikasi.',
+          dibuat_pada: nowISO(), oleh: 'demo' }
+      ],
+      titik: [].concat(
+        kotak(mulai, mulaiLng, 100, l1),
+        kotak(mulai - 0.0016, mulaiLng + 0.0012, 80, l2),
+        kotak(mulai + 0.0014, mulaiLng - 0.0011, 55, l3)
+      ),
+      lampiran: [],
+      ttd: [],
+      pesan: [
+        { pesan_id: uid('msg'), ruang: 'umum', username: 'surveyor2', nama: 'Dedi Suryana',
+          isi: 'Selamat datang di demo GeoUkur GPS. Obrolan tim seperti ini bisa dipakai di lapangan.',
+          lat: '', lng: '', waktu: nowISO() },
+        { pesan_id: uid('msg'), ruang: 'umum', username: 'surveyor2', nama: 'Dedi Suryana',
+          isi: 'Pesan juga bisa melampirkan koordinat — ketuk untuk lompat ke peta.',
+          lat: mulai - 0.0005, lng: mulaiLng + 0.0006, waktu: nowISO() }
+      ],
+      log: [{ log_id: uid('log'), waktu: nowISO(), aktor: 'Demo', aksi: 'Mulai Demo',
+              lahan_id: '', detail: 'Data contoh disiapkan.' }]
+    };
+  }
+
+  var DB;
+  try { DB = JSON.parse(localStorage.getItem(KUNCI) || 'null'); } catch (e) { DB = null; }
+  if (!DB || !DB.lahan) { DB = dbBaru(); }
+  function simpan() { try { localStorage.setItem(KUNCI, JSON.stringify(DB)); } catch (e) {} }
+
+  var CFG = {
+    app_name: 'GeoUkur GPS (DEMO)',
+    instansi: 'Demo — Data Contoh',
+    logo_url: '', ada_logo: false,
+    warna_utama: '#E8590C',
+    peta_lat: mulai, peta_lng: mulaiLng, peta_zoom: 17,
+    toleransi_akurasi: 10, label_tiap: 5,
+    versi: (window.APP_VERSION || '') + ' demo'
+  };
+
+  var SESI = { user_id: 'u_demo', username: 'demo', nama_lengkap: 'Pengguna Demo', role: 'admin' };
+
+  function luasKasar(T) {
+    if (T.length < 3) return 0;
+    var R = 6378137, rad = Math.PI / 180, jml = 0;
+    for (var i = 0; i < T.length; i++) {
+      var a = T[i], b = T[(i + 1) % T.length];
+      jml += (b.lng - a.lng) * rad * (2 + Math.sin(a.lat * rad) + Math.sin(b.lat * rad));
+    }
+    return Math.abs(jml * R * R / 2);
+  }
+
+  function detail(id) {
+    var l = DB.lahan.filter(function (x) { return x.lahan_id === id; })[0];
+    if (!l) throw new Error('Lahan tidak ditemukan.');
+    var T = DB.titik.filter(function (t) { return t.lahan_id === id; })
+      .sort(function (a, b) { return a.urutan - b.urutan; });
+    return {
+      lahan: l, titik: T,
+      lampiran: DB.lampiran.filter(function (a) { return a.lahan_id === id; }),
+      ttd: DB.ttd.filter(function (s) { return s.lahan_id === id; }),
+      ringkas: { luas_m2: luasKasar(T), jumlah_titik: T.length }
+    };
+  }
+
+  function daftar() {
+    return DB.lahan.map(function (l) {
+      var T = DB.titik.filter(function (t) { return t.lahan_id === l.lahan_id; });
+      return {
+        lahan_id: l.lahan_id, nama: l.nama, pemilik: l.pemilik, status: l.status,
+        jenis: l.jenis, desa: l.desa, kecamatan: l.kecamatan,
+        no_sertifikat: l.no_sertifikat, jumlah_titik: T.length,
+        luas_m2: luasKasar(T), dibuat_pada: l.dibuat_pada
+      };
+    });
+  }
+
+  function pusat(T) {
+    if (!T.length) return null;
+    var la = 0, ln = 0;
+    T.forEach(function (t) { la += t.lat; ln += t.lng; });
+    return { lat: la / T.length, lng: ln / T.length };
+  }
+
+  /** Router demo: menirukan api() di Code.gs, seadanya tapi konsisten. */
+  var RUTE = {
+    info: function () { return { app: 'GeoUkur GPS', versi: CFG.versi, config: CFG, demo: true }; },
+
+    login: function () {
+      return { token: 'demo-token', kadaluarsa: Date.now() + 864e5, perangkat: 'Demo',
+               pengguna: SESI, config: CFG };
+    },
+
+    profilSaya: function () {
+      return { username: SESI.username, nama_lengkap: SESI.nama_lengkap, role: SESI.role,
+               wa: '', foto: '' };
+    },
+    ambilAvatar: function () { return { foto: '', nama: SESI.nama_lengkap, role: SESI.role }; },
+    ambilLogo: function () { return { data: '', data_uri: '' }; },
+    konfigurasi: function () { return CFG; },
+    simpanKonfigurasi: function (p) {
+      ['app_name', 'instansi', 'warna_utama'].forEach(function (k) {
+        if (p[k] !== undefined && p[k] !== '') CFG[k] = p[k];
+      });
+      return CFG;
+    },
+
+    daftarLahan: function () { return daftar(); },
+    detailLahan: function (p) { return detail(p.lahan_id); },
+
+    tambahLahan: function (p) {
+      if (DB.lahan.length >= DEMO_BATAS.maks_lahan) {
+        throw new Error('Demo dibatasi ' + DEMO_BATAS.maks_lahan + ' bidang. ' +
+          'Versi penuh tidak dibatasi.');
+      }
+      var id = uid('lhn');
+      DB.lahan.unshift({
+        lahan_id: id, nama: p.nama || 'Bidang Baru', pemilik: p.pemilik || '',
+        no_sertifikat: p.no_sertifikat || '', jenis: p.jenis || 'Pertanian', status: 'Draf',
+        desa: p.desa || '', kecamatan: p.kecamatan || '', kabupaten: p.kabupaten || '',
+        provinsi: p.provinsi || '', catatan: p.catatan || '', dibuat_pada: nowISO(), oleh: 'demo'
+      });
+      simpan();
+      return { lahan_id: id };
+    },
+    ubahLahan: function (p) {
+      var l = DB.lahan.filter(function (x) { return x.lahan_id === p.lahan_id; })[0];
+      if (l) Object.keys(p).forEach(function (k) { if (k in l && k !== 'lahan_id') l[k] = p[k]; });
+      simpan();
+      return true;
+    },
+    hapusLahan: function (p) {
+      DB.lahan = DB.lahan.filter(function (x) { return x.lahan_id !== p.lahan_id; });
+      DB.titik = DB.titik.filter(function (t) { return t.lahan_id !== p.lahan_id; });
+      simpan();
+      return true;
+    },
+    ubahStatusLahan: function (p) {
+      var l = DB.lahan.filter(function (x) { return x.lahan_id === p.lahan_id; })[0];
+      if (l) l.status = p.status;
+      simpan();
+      return true;
+    },
+
+    simpanTitik: function (p) {
+      var T = DB.titik.filter(function (t) { return t.lahan_id === p.lahan_id; });
+      var id = uid('ttk');
+      DB.titik.push({
+        titik_id: id, lahan_id: p.lahan_id, urutan: T.length + 1,
+        kode_patok: p.kode_patok || ('T' + (T.length + 1)),
+        lat: Number(p.lat), lng: Number(p.lng), akurasi: Number(p.akurasi) || 0,
+        sumber: p.sumber || 'gps', catatan: p.catatan || '', waktu: nowISO()
+      });
+      simpan();
+      return { titik_id: id };
+    },
+    simpanTitikBatch: function (p) {
+      (p.titik || []).forEach(function (t) { RUTE.simpanTitik(Object.assign({ lahan_id: p.lahan_id }, t)); });
+      return { jumlah: (p.titik || []).length };
+    },
+    geserTitik: function (p) {
+      var t = DB.titik.filter(function (x) { return x.titik_id === p.titik_id; })[0];
+      if (t) { t.lat = Number(p.lat); t.lng = Number(p.lng); t.sumber = 'manual'; }
+      simpan();
+      return true;
+    },
+    hapusTitik: function (p) {
+      DB.titik = DB.titik.filter(function (t) { return t.titik_id !== p.titik_id; });
+      simpan();
+      return true;
+    },
+    urutkanTitik: function () { return true; },
+
+    daftarLampiran: function (p) {
+      return DB.lampiran.filter(function (a) { return a.lahan_id === p.lahan_id; });
+    },
+    simpanTtd: function () { throw new Error('Tanda tangan dinonaktifkan di demo.'); },
+
+    // Kolaborasi & obrolan
+    denyut: function (p) {
+      var rekan = [{
+        device_id: 'demo-rekan', username: 'surveyor2', nama: 'Dedi Suryana',
+        lahan_nama: 'Sawah Contoh B', lat: mulai - 0.0007, lng: mulaiLng + 0.0009,
+        akurasi: 4, detik_lalu: 12
+      }];
+      var lahanId = p.lahan_id || '';
+      var T = DB.titik.filter(function (t) { return t.lahan_id === lahanId; });
+      return {
+        rekan: rekan,
+        tetangga: RUTE.bidangSekitar({ lahan_id: lahanId }).tetangga,
+        pesan_baru: { umum: 0, lahan: 0 },
+        waktu_server: nowISO()
+      };
+    },
+    bidangSekitar: function (p) {
+      return {
+        tetangga: DB.lahan
+          .filter(function (l) { return l.lahan_id !== p.lahan_id; })
+          .map(function (l) {
+            var T = DB.titik.filter(function (t) { return t.lahan_id === l.lahan_id; })
+              .sort(function (a, b) { return a.urutan - b.urutan; });
+            var c = pusat(T);
+            return {
+              lahan_id: l.lahan_id, nama: l.nama, pemilik: l.pemilik, status: l.status,
+              jumlah_titik: T.length, luas_m2: luasKasar(T),
+              lat_pusat: c ? c.lat : 0, lng_pusat: c ? c.lng : 0,
+              titik: T.map(function (t) { return { lat: t.lat, lng: t.lng }; })
+            };
+          })
+      };
+    },
+    periksaTumpangTindih: function () { return { konflik: [] }; },
+
+    ambilPesan: function (p) {
+      var ruang = p.ruang || 'umum';
+      var list = DB.pesan.filter(function (m) { return m.ruang === ruang; });
+      if (p.sejak) list = list.filter(function (m) { return m.waktu > p.sejak; });
+      return {
+        ruang: ruang, waktu_server: nowISO(),
+        pesan: list.map(function (m) {
+          return {
+            pesan_id: m.pesan_id, username: m.username, nama: m.nama, isi: m.isi,
+            lat: m.lat === '' ? null : Number(m.lat),
+            lng: m.lng === '' ? null : Number(m.lng),
+            waktu: m.waktu, saya: m.username === SESI.username
+          };
+        })
+      };
+    },
+    kirimPesan: function (p) {
+      var m = {
+        pesan_id: uid('msg'), ruang: p.ruang || 'umum', username: SESI.username,
+        nama: SESI.nama_lengkap, isi: String(p.isi || ''),
+        lat: p.lat === '' || p.lat === undefined ? '' : p.lat,
+        lng: p.lng === '' || p.lng === undefined ? '' : p.lng,
+        waktu: nowISO()
+      };
+      DB.pesan.push(m);
+      simpan();
+      // Balasan otomatis sekali, supaya demo terasa hidup.
+      if (!DB._balas) {
+        DB._balas = true;
+        DB.pesan.push({
+          pesan_id: uid('msg'), ruang: m.ruang, username: 'surveyor2', nama: 'Dedi Suryana',
+          isi: 'Siap, diterima. (balasan otomatis mode demo)', lat: '', lng: '', waktu: nowISO()
+        });
+        simpan();
+      }
+      return { pesan_id: m.pesan_id, waktu: m.waktu };
+    },
+
+    daftarPengguna: function () {
+      return [
+        { user_id: 'u_demo', username: 'demo', nama_lengkap: 'Pengguna Demo', role: 'admin', aktif: true },
+        { user_id: 'u2', username: 'surveyor2', nama_lengkap: 'Dedi Suryana', role: 'surveyor', aktif: true }
+      ];
+    },
+    sesiAktif: function () {
+      return [{ username: 'demo', nama_lengkap: 'Pengguna Demo', perangkat: 'Perangkat ini',
+                sesi_pada: nowISO(), menganggur_menit: 0, ditinggalkan: false }];
+    },
+    keluarSesi: function () { return true; },
+    daftarLog: function () { return DB.log; },
+    cekKesehatan: function () { return { status: 'Demo', catatan: 'Mode demo tanpa server.' }; },
+    imporTitik: function () { throw new Error('Impor dinonaktifkan di demo.'); }
+  };
+
+  window.DEMO_API = function (req) {
+    return new Promise(function (resolve) {
+      var aksi = req.action;
+      // jeda kecil supaya terasa seperti panggilan jaringan sungguhan
+      setTimeout(function () {
+        if (DEMO_BATAS.fitur_mati.indexOf(aksi) >= 0) {
+          resolve({ ok: false, error: 'Fitur "' + aksi + '" dinonaktifkan di versi demo. ' +
+                                      'Tersedia penuh di versi berbayar.' });
+          return;
+        }
+        var fn = RUTE[aksi];
+        if (!fn) { resolve({ ok: false, error: 'Aksi "' + aksi + '" tidak tersedia di demo.' }); return; }
+        try { resolve({ ok: true, data: fn(req.payload || {}) }); }
+        catch (e) { resolve({ ok: false, error: e.message }); }
+      }, 80);
+    });
+  };
+
+  /** Spanduk demo + tombol reset data contoh. */
+  document.addEventListener('DOMContentLoaded', function () {
+    var b = document.createElement('div');
+    b.id = 'spandukDemo';
+    b.innerHTML = '<b>MODE DEMO</b> — data contoh di perangkat ini, tidak terhubung server. ' +
+      '<button id="demoReset">Reset data demo</button>';
+    document.body.appendChild(b);
+    var g = document.createElement('style');
+    g.textContent = '#spandukDemo{position:fixed;left:0;right:0;bottom:0;z-index:5000;background:#14181F;' +
+      'color:#fff;font:600 11.5px/1.4 system-ui,sans-serif;padding:7px 12px;text-align:center;' +
+      'display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap}' +
+      '#spandukDemo b{color:#FFB27A;letter-spacing:.04em}' +
+      '#spandukDemo button{border:1px solid rgba(255,255,255,.35);background:transparent;color:#fff;' +
+      'border-radius:7px;padding:3px 9px;font:inherit;cursor:pointer}' +
+      'body{padding-bottom:34px}';
+    document.head.appendChild(g);
+    document.getElementById('demoReset').onclick = function () {
+      if (!confirm('Kembalikan data demo ke kondisi awal?')) return;
+      localStorage.removeItem('gu_demo_db');
+      localStorage.removeItem('gu_token');
+      localStorage.removeItem('gu_pengguna');
+      location.reload();
+    };
+  });
+})();
+</script>
 <script>
 /* ============================================================
    GeoUkur GPS — logika aplikasi (vanilla JS + Leaflet)
@@ -1944,7 +2307,7 @@ $('inputOverlay').onchange = function (e) {
 // Beberapa cermin CDN; dicoba berurutan. Path cdnjs lama ('shp/3.6.3') tidak ada —
 // nama paketnya 'shpjs' dan berkasnya di dist/shp.min.js.
 var SHPJS_CDN = [
-  'lib/shp.min.js',                                   // diinangkan sendiri (paket GitHub/APK)
+  '../lib/shp.min.js',                                   // diinangkan sendiri (paket GitHub/APK)
   'https://unpkg.com/shpjs@4.0.4/dist/shp.min.js',
   'https://cdn.jsdelivr.net/npm/shpjs@4.0.4/dist/shp.min.js',
   'https://cdnjs.cloudflare.com/ajax/libs/shpjs/4.0.4/shp.min.js'
@@ -2095,7 +2458,7 @@ function simpanOverlay() {
    ============================================================ */
 var PIKSEL_KOSONG = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
 // Utamakan berkas lokal; kalau tidak ada (mis. dijalankan langsung dari Apps Script), pakai CDN.
-var SQLJS_LOKAL = 'lib/';
+var SQLJS_LOKAL = '../lib/';
 var SQLJS_CDN = 'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/';
 
 var LapisMbtiles = L.TileLayer.extend({
