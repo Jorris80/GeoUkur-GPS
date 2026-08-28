@@ -241,6 +241,15 @@ button,input,select,textarea{font-family:inherit;font-size:16px} /* 16px = iOS t
 .inp-mini{flex:1;min-width:0;padding:7px 9px;border:1.5px solid var(--garis);border-radius:9px;background:#fff;
   font-family:inherit;font-size:13px}
 .inp-mini:disabled{opacity:.5}
+.dok-teks{font-size:12.5px;line-height:1.65;color:var(--tinta-2)}
+.dok-teks h4{font-family:var(--dasar);font-size:13px;color:var(--tinta);margin:16px 0 5px}
+.dok-teks h4:first-child{margin-top:6px}
+.dok-teks p{margin:0 0 8px}
+.dok-teks b{color:var(--tinta)}
+.dok-teks .tabel-identify{margin:8px 0 4px}
+.dok-kecil{background:var(--kertas);border:1px solid var(--garis);border-radius:10px;padding:10px 12px;
+  font-size:12px;color:var(--tinta-2)}
+.dok-teks code{background:#F0EEE8;padding:1px 4px;border-radius:4px;font-size:11.5px;font-family:var(--mono)}
 .kotak-db{background:var(--kertas);border:1px solid var(--garis);border-radius:12px;padding:12px;margin-top:12px}
 .lbl-db{font-size:12px;font-weight:700;color:var(--tinta-2);margin-bottom:6px}
 .lbl-db span{font-weight:400;color:var(--tinta-3)}
@@ -514,7 +523,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 4.2.1 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 4.3.0 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -703,7 +712,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '4.2.1';
+    window.APP_VERSION = '4.3.0';
   </script>
 <script>
 /* ============================================================
@@ -784,11 +793,16 @@ var S = {
  */
 var PENYEDIA = {
   maptiler: {
-    label: 'MapTiler', petunjuk: 'Daftar di maptiler.com → API Keys',
+    label: 'MapTiler',
+    petunjuk: 'Daftar gratis di maptiler.com → Account → API Keys → salin kunci',
     lapis: [
+      // Hybrid ditaruh pertama: citra satelit + nama jalan/tempat adalah kombinasi paling
+      // berguna saat menyusuri batas lahan di lapangan.
+      { nama: 'Citra + Label (Hybrid)', url: 'https://api.maptiler.com/maps/hybrid/{z}/{x}/{y}.jpg?key=KUNCI', maks: 20, kredit: '&copy; MapTiler &copy; OpenStreetMap contributors' },
       { nama: 'Citra Satelit', url: 'https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=KUNCI', maks: 20, kredit: '&copy; MapTiler &copy; OpenStreetMap contributors' },
       { nama: 'Peta Jalan', url: 'https://api.maptiler.com/maps/streets-v2/{z}/{x}/{y}.png?key=KUNCI', maks: 20, kredit: '&copy; MapTiler &copy; OpenStreetMap contributors' },
-      { nama: 'Topografi', url: 'https://api.maptiler.com/maps/topo-v2/{z}/{x}/{y}.png?key=KUNCI', maks: 20, kredit: '&copy; MapTiler &copy; OpenStreetMap contributors' }
+      { nama: 'Topografi', url: 'https://api.maptiler.com/maps/topo-v2/{z}/{x}/{y}.png?key=KUNCI', maks: 20, kredit: '&copy; MapTiler &copy; OpenStreetMap contributors' },
+      { nama: 'Kontur & Medan', url: 'https://api.maptiler.com/maps/outdoor-v2/{z}/{x}/{y}.png?key=KUNCI', maks: 20, kredit: '&copy; MapTiler &copy; OpenStreetMap contributors' }
     ]
   },
   esri: {
@@ -1624,32 +1638,172 @@ function panelLisensiAktivasi() {
 }
 
 /* ---------- TENTANG & LISENSI ---------- */
-function panelLisensi() {
-  bukaLembar('Tentang & Lisensi',
-    '<p style="font-size:13.5px;line-height:1.6;margin-top:0"><b>' + esc((S.config && S.config.app_name) || 'GeoUkur GPS') +
-    '</b><br><span style="color:var(--tinta-3)">Versi ' + esc(window.APP_VERSION || '-') + '</span></p>' +
+function panelLisensi(tab) {
+  // Dipanggil juga langsung sebagai penangan klik, yang mengirim objek event —
+  // jadi hanya nilai string yang dianggap sebagai nama tab.
+  var t = (typeof tab === 'string' && tab) ? tab : 'tentang';
+  var nama = (S.config && S.config.app_name) || 'GeoUkur GPS';
+  var instansi = (S.config && S.config.instansi) || '';
 
-    '<p style="font-size:12.5px;line-height:1.6;color:var(--tinta-2)">Aplikasi ini memakai perangkat lunak sumber terbuka ' +
-    'berikut. Teks lisensi lengkap disertakan dalam paket pemasangan (LISENSI-PIHAK-KETIGA.txt).</p>' +
+  var isi = '<div class="tab-ruang" id="tabTentang">' +
+    '<button data-t="tentang" class="' + (t === 'tentang' ? 'pilih' : '') + '">Tentang</button>' +
+    '<button data-t="syarat" class="' + (t === 'syarat' ? 'pilih' : '') + '">Syarat</button>' +
+    '<button data-t="privasi" class="' + (t === 'privasi' ? 'pilih' : '') + '">Privasi</button>' +
+    '</div>';
+
+  if (t === 'tentang') isi += isiTentang(nama, instansi);
+  else if (t === 'syarat') isi += isiSyarat(nama);
+  else isi += isiPrivasi(nama);
+
+  bukaLembar('Tentang Aplikasi', isi);
+
+  Array.prototype.forEach.call($('tabTentang').children, function (b) {
+    b.onclick = function () { panelLisensi(b.dataset.t); };
+  });
+}
+
+function isiTentang(nama, instansi) {
+  var l = S.lisensi || {};
+  var baris = function (k, v) { return '<tr><th>' + k + '</th><td>' + esc(String(v || '-')) + '</td></tr>'; };
+
+  return '<div class="identify-kepala"><div><b>' + esc(nama) + '</b>' +
+    '<small>' + esc(instansi) + '</small></div></div>' +
 
     '<table class="tabel-identify">' +
-      '<tr><th>Leaflet 1.9.4</th><td>BSD 2-Clause &middot; &copy; 2010-2023 Volodymyr Agafonkin</td></tr>' +
-      '<tr><th>shpjs 4.0.4</th><td>MIT &middot; pembaca Shapefile</td></tr>' +
-      '<tr><th>sql.js</th><td>MIT &middot; pembaca MBTiles</td></tr>' +
+      baris('Versi aplikasi', window.APP_VERSION || '-') +
+      baris('Versi antarmuka', $('pinAlat') ? 'terbaru' : 'perlu diperbarui') +
+      baris('Mode', modeStatis() ? 'Web statis + Apps Script' : 'Google Apps Script') +
+      baris('Basis data', l.db_nama || 'Google Sheets') +
+      baris('Status lisensi', l.keadaan || '-') +
+      (l.klien ? baris('Terdaftar atas nama', l.klien) : '') +
+      (l.sampai ? baris('Lisensi berlaku sampai', l.sampai) : '') +
+      baris('Peta dasar', basemapPenyedia().length
+        ? (PENYEDIA[S.config.peta_penyedia] || {}).label + ' (kunci API pemilik sistem)'
+        : 'Peta Grid / MBTiles offline') +
     '</table>' +
 
-    '<p style="font-size:12.5px;line-height:1.6;color:var(--tinta-2);margin-top:14px"><b>Peta dasar.</b> ' +
-    'Citra satelit dan peta jalan berasal dari penyedia yang Anda pilih sendiri memakai kunci API milik Anda. ' +
-    'Ketentuan penggunaan, kuota, dan biayanya mengikuti perjanjian Anda dengan penyedia tersebut. ' +
-    'Peta Grid digambar di perangkat dan tidak memakai layanan luar.</p>' +
+    '<p style="font-size:12.5px;line-height:1.6;color:var(--tinta-2);margin-top:14px">' +
+    '<b>Komponen sumber terbuka.</b> Aplikasi ini memakai Leaflet 1.9.4 (BSD 2-Clause), ' +
+    'shpjs 4.0.4 (MIT), dan sql.js (MIT). Teks lisensi lengkap disertakan dalam paket pemasangan ' +
+    'pada berkas <code>LISENSI-PIHAK-KETIGA.txt</code>.</p>' +
 
-    '<p style="font-size:12.5px;line-height:1.6;color:var(--tinta-2)"><b>Penafian.</b> ' +
-    'Hasil pengukuran GPS pada aplikasi ini adalah data kerja lapangan dan <b>bukan pengganti pengukuran resmi ' +
-    'yang diterbitkan instansi berwenang</b> (mis. BPN). Ketelitian bergantung pada perangkat, kondisi langit, ' +
-    'dan metode pengambilan titik.</p>' +
+    '<p style="font-size:12.5px;line-height:1.6;color:var(--tinta-2)">' +
+    '<b>Peta dasar.</b> Aplikasi tidak menyertakan layanan peta pihak ketiga. Citra satelit dan peta jalan ' +
+    'diaktifkan oleh pemilik sistem memakai kunci API miliknya sendiri; ketentuan, kuota, dan biayanya ' +
+    'mengikuti perjanjian dengan penyedia peta tersebut. Peta Grid digambar di perangkat tanpa layanan luar.</p>';
+}
 
-    '<p style="font-size:12.5px;line-height:1.6;color:var(--tinta-2)"><b>Data Anda.</b> ' +
-    'Seluruh data tersimpan di Google Sheets pada akun Google milik Anda sendiri.</p>');
+function isiSyarat(nama) {
+  return '<div class="dok-teks">' +
+    '<p class="dok-kecil">Berlaku untuk pemakaian aplikasi <b>' + esc(nama) + '</b>. ' +
+    'Ketentuan komersial yang lebih rinci mengikuti perjanjian lisensi tertulis antara pemilik sistem ' +
+    'dan penyedia aplikasi; bila terdapat perbedaan, perjanjian tertulis yang berlaku.</p>' +
+
+    '<h4>1. Hak pemakaian</h4>' +
+    '<p>Aplikasi diberikan sebagai <b>hak pakai</b>, bukan hak milik. Pemilik sistem berhak memasang dan ' +
+    'menggunakannya untuk keperluan internal organisasinya, dalam batas jumlah pengguna dan masa berlaku ' +
+    'yang tercantum pada lisensi. Menjual ulang, menyewakan, atau mendistribusikan aplikasi kepada pihak lain ' +
+    'memerlukan persetujuan tertulis penyedia.</p>' +
+
+    '<h4>2. Akun dan tanggung jawab pengguna</h4>' +
+    '<p>Setiap pengguna bertanggung jawab menjaga kerahasiaan kata sandinya. Satu akun hanya dapat aktif pada ' +
+    'satu perangkat dalam satu waktu. Administrator bertanggung jawab atas pemberian dan pencabutan akses ' +
+    'pengguna di organisasinya.</p>' +
+
+    '<h4>3. Batas ketelitian pengukuran</h4>' +
+    '<p><b>Hasil pengukuran pada aplikasi ini merupakan data kerja lapangan dan bukan pengganti pengukuran ' +
+    'resmi yang diterbitkan instansi berwenang</b> (antara lain Badan Pertanahan Nasional). Ketelitian koordinat ' +
+    'bergantung pada perangkat GPS, kondisi penerimaan sinyal, cuaca, tutupan vegetasi, dan metode pengambilan ' +
+    'titik. Luas dan batas yang dihasilkan bersifat indikatif. Setiap penggunaan hasil ukur untuk keperluan ' +
+    'hukum, jual beli, atau penyelesaian sengketa menjadi tanggung jawab pemakai dan sebaiknya diverifikasi ' +
+    'oleh surveyor berlisensi.</p>' +
+
+    '<h4>4. Ketersediaan layanan</h4>' +
+    '<p>Aplikasi berjalan di atas Google Apps Script dan Google Sheets pada akun milik pemilik sistem, serta ' +
+    'dapat memakai layanan peta pihak ketiga. Penyedia aplikasi tidak menjamin ketersediaan layanan pihak ' +
+    'ketiga tersebut, termasuk perubahan kuota, ketentuan, atau penghentian layanan oleh penyedianya.</p>' +
+
+    '<h4>5. Kewajiban pemilik sistem</h4>' +
+    '<p>Pemilik sistem bertanggung jawab atas: keabsahan kunci API peta yang digunakan beserta biayanya; ' +
+    'kepatuhan pada ketentuan penyedia peta; keabsahan sumber citra yang dipakai untuk peta offline (MBTiles); ' +
+    'serta pencadangan data pada akun Google-nya.</p>' +
+
+    '<h4>6. Batas tanggung jawab</h4>' +
+    '<p>Aplikasi disediakan apa adanya. Sejauh diizinkan hukum yang berlaku, penyedia tidak bertanggung jawab ' +
+    'atas kerugian tidak langsung, kehilangan keuntungan, atau kerugian yang timbul dari penggunaan maupun ' +
+    'ketidakmampuan menggunakan aplikasi, termasuk yang berkaitan dengan ketelitian data ukur.</p>' +
+
+    '<h4>7. Masa berlaku lisensi</h4>' +
+    '<p>Berakhirnya lisensi tidak menghapus atau mengunci data pemilik sistem. Data tetap berada di Google ' +
+    'Sheets miliknya dan dapat diakses maupun diekspor. Yang dibatasi adalah sebagian fungsi komersial, ' +
+    'antara lain penerbitan berita acara tanpa tanda air dan penambahan pengguna baru.</p>' +
+
+    '<h4>8. Perubahan ketentuan</h4>' +
+    '<p>Ketentuan dapat diperbarui pada versi aplikasi berikutnya. Versi ketentuan yang berlaku adalah yang ' +
+    'tercantum pada aplikasi saat digunakan.</p>' +
+    '</div>';
+}
+
+function isiPrivasi(nama) {
+  return '<div class="dok-teks">' +
+    '<p class="dok-kecil"><b>Ringkasan:</b> seluruh data Anda disimpan di Google Sheets pada akun Google milik ' +
+    'organisasi Anda sendiri. Penyedia aplikasi tidak memiliki akses ke data tersebut dan tidak menyimpan ' +
+    'salinannya.</p>' +
+
+    '<h4>1. Siapa pengelola data</h4>' +
+    '<p>Pengelola data adalah <b>organisasi pemilik sistem</b> — yaitu pemilik akun Google tempat aplikasi ' +
+    'dipasang. Penyedia aplikasi berperan sebagai pembuat perangkat lunak, bukan penyimpan data.</p>' +
+
+    '<h4>2. Data yang disimpan</h4>' +
+    '<table class="tabel-identify">' +
+      '<tr><th>Akun pengguna</th><td>Nama pengguna, nama lengkap, peran, kata sandi (disimpan sebagai ' +
+      'hash SHA-256 bersalt — tidak dapat dibaca kembali), foto profil bila diunggah, nomor WhatsApp bila diisi</td></tr>' +
+      '<tr><th>Data ukur</th><td>Koordinat titik (lintang, bujur, ketelitian), kode patok, catatan, ' +
+      'data bidang (nama, pemilik, nomor sertifikat, lokasi)</td></tr>' +
+      '<tr><th>Lokasi perangkat</th><td>Posisi GPS saat merekam titik. Bila fitur kolaborasi dinyalakan, ' +
+      'posisi terkini dibagikan ke rekan setim selama beberapa menit</td></tr>' +
+      '<tr><th>Dokumentasi</th><td>Foto lapangan dan tanda tangan digital yang Anda buat</td></tr>' +
+      '<tr><th>Obrolan</th><td>Isi pesan, pengirim, waktu, dan koordinat bila Anda melampirkannya</td></tr>' +
+      '<tr><th>Catatan aktivitas</th><td>Siapa melakukan apa dan kapan, untuk keperluan audit</td></tr>' +
+      '<tr><th>Sesi perangkat</th><td>Jenis perangkat dan waktu login, untuk membatasi satu akun satu perangkat</td></tr>' +
+    '</table>' +
+
+    '<h4>3. Di mana data disimpan</h4>' +
+    '<p>Di Google Sheets pada akun Google organisasi Anda. Beberapa pengaturan (URL server, peta dasar pilihan, ' +
+    'lapisan overlay, berkas peta offline) disimpan secara lokal di perangkat masing-masing pengguna dan tidak ' +
+    'dikirim ke mana pun.</p>' +
+
+    '<h4>4. Izin lokasi</h4>' +
+    '<p>Aplikasi meminta izin lokasi untuk merekam koordinat titik ukur. Izin ini dapat dicabut kapan saja ' +
+    'melalui pengaturan peramban atau perangkat; tanpa izin tersebut, perekaman titik GPS tidak dapat dilakukan. ' +
+    'Berbagi lokasi ke rekan setim bersifat opsional dan dapat dimatikan melalui menu alat.</p>' +
+
+    '<h4>5. Pihak ketiga</h4>' +
+    '<p>Saat menampilkan peta online, permintaan gambar peta dikirim ke penyedia peta yang dipilih pemilik ' +
+    'sistem (MapTiler, Esri, Mapbox, atau sumber lain). Permintaan tersebut dapat memuat area peta yang sedang ' +
+    'dilihat sesuai kebijakan privasi penyedia bersangkutan. Bila notifikasi WhatsApp diaktifkan, nomor tujuan ' +
+    'dan isi pesan dikirim ke layanan Fonnte. Pemakaian Peta Grid dan MBTiles offline tidak mengirimkan data ' +
+    'ke pihak mana pun.</p>' +
+
+    '<h4>6. Berbagi dan penyimpanan</h4>' +
+    '<p>Data tidak dijual dan tidak dibagikan ke pihak lain oleh aplikasi. Lamanya penyimpanan ditentukan ' +
+    'organisasi Anda. Administrator dapat menghapus data bidang, membersihkan riwayat obrolan lama, dan ' +
+    'menonaktifkan akun pengguna.</p>' +
+
+    '<h4>7. Hak pengguna</h4>' +
+    '<p>Sebagai pengguna, Anda dapat meminta administrator organisasi untuk melihat, memperbaiki, atau ' +
+    'menghapus data pribadi Anda (nama, foto profil, nomor WhatsApp) serta menonaktifkan akun Anda. ' +
+    'Data ukur umumnya merupakan milik organisasi dan tunduk pada kebijakan internalnya.</p>' +
+
+    '<h4>8. Keamanan</h4>' +
+    '<p>Kata sandi disimpan sebagai hash bersalt. Akses dibatasi berdasarkan peran (admin, surveyor, viewer), ' +
+    'dan satu akun hanya dapat aktif di satu perangkat. Keamanan akun Google organisasi — termasuk verifikasi ' +
+    'dua langkah — merupakan tanggung jawab pemilik sistem.</p>' +
+
+    '<p class="dok-kecil" style="margin-top:14px">Pemberitahuan ini menjelaskan cara kerja aplikasi. ' +
+    'Untuk memenuhi kewajiban hukum perlindungan data yang berlaku bagi organisasi Anda, sesuaikan dan ' +
+    'lengkapi dokumen ini bersama penasihat hukum Anda.</p>' +
+    '</div>';
 }
 
 /* ---------- IDENTIFY: lihat seluruh atribut sebuah fitur vektor ---------- */
@@ -4332,7 +4486,7 @@ function gambarPengaturan() {
     (p.role === 'admin'
       ? '<button class="menu-item" id="mPengguna"><span class="em">&#128101;</span><span><b>Kelola pengguna</b><small>Tambah surveyor, atur peran</small></span></button>' +
         '<button class="menu-item" id="mLisensiAktif"><span class="em">&#128273;</span><span><b>Lisensi</b><small>Status, batas pengguna, aktivasi kunci</small></span></button>' +
-        '<button class="menu-item" id="mLisensi"><span class="em">&#9878;</span><span><b>Tentang &amp; lisensi</b><small>Versi, lisensi sumber terbuka, penafian</small></span></button>' +
+        '<button class="menu-item" id="mLisensi"><span class="em">&#9878;</span><span><b>Tentang aplikasi</b><small>Versi, syarat &amp; ketentuan, pemberitahuan privasi</small></span></button>' +
         '<button class="menu-item" id="mBersihPesan"><span class="em">&#129529;</span><span><b>Bersihkan obrolan lama</b><small>Hapus pesan lebih tua dari 30 hari</small></span></button>' +
         '<button class="menu-item" id="mSesi"><span class="em">&#128241;</span><span><b>Perangkat aktif</b><small>Lihat siapa sedang login, putuskan bila perlu</small></span></button>' +
         '<button class="menu-item" id="mKonfig"><span class="em">&#9881;</span><span><b>Pengaturan aplikasi</b><small>Nama instansi, toleransi GPS, WhatsApp</small></span></button>'
@@ -4341,7 +4495,16 @@ function gambarPengaturan() {
     '</div>' +
     '<p class="jejak">GeoUkur GPS v' + esc(window.APP_VERSION) + ' - data tersimpan di Google Sheets</p>';
 
+  // Versi ditampilkan di kaki halaman agar mudah dicek saat dukungan teknis,
+  // tanpa harus membuka menu Tentang.
+  html += '<p class="jejak" style="text-align:center;margin-top:16px">' +
+    esc((S.config && S.config.app_name) || 'GeoUkur GPS') + ' &middot; versi ' +
+    esc(window.APP_VERSION || '-') +
+    (S.lisensi && S.lisensi.klien ? ' &middot; lisensi: ' + esc(S.lisensi.klien) : '') +
+    '<br><a href="#" id="lnkTentang">Tentang, syarat &amp; privasi</a></p>';
+
   $('isiPengaturan').innerHTML = html;
+  if ($('lnkTentang')) $('lnkTentang').onclick = function (e) { e.preventDefault(); panelLisensi('tentang'); };
 
   // pastikan foto profil sendiri ada di cache, lalu segarkan tampilannya
   if (!S.avatar[p.username]) {
