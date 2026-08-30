@@ -523,7 +523,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 4.3.0 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 4.4.0 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -712,7 +712,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '4.3.0';
+    window.APP_VERSION = '4.4.0';
   </script>
 <script>
 /* ============================================================
@@ -932,15 +932,82 @@ function tunggu(tampil, teks) {
   $('tungguTeks').textContent = teks || 'Memuat...';
   $('tunggu').classList.toggle('tersembunyi', !tampil);
 }
+/* ============================================================
+   TOMBOL KEMBALI PONSEL
+   Tanpa ini, tombol back Android langsung menutup aplikasi — pekerjaan lapangan
+   bisa terputus di tengah jalan. Setiap lapisan tampilan (lightbox, lembar, halaman)
+   didaftarkan ke riwayat peramban, lalu ditutup satu per satu sesuai urutan terbalik.
+   ============================================================ */
+var RIWAYAT = { tumpuk: [], abaikan: false };
+
+/** Daftarkan satu lapisan; fn dijalankan saat tombol kembali ditekan. */
+function dorongRiwayat(nama, fn) {
+  RIWAYAT.tumpuk.push({ nama: nama, tutup: fn });
+  try { history.pushState({ gu: nama, ke: RIWAYAT.tumpuk.length }, ''); } catch (e) { /* abaikan */ }
+}
+
+/** Tutup lapisan teratas tanpa memicu riwayat lagi (dipakai tombol ✕ di layar). */
+function lepasRiwayat(nama) {
+  var i = -1;
+  for (var k = RIWAYAT.tumpuk.length - 1; k >= 0; k--) {
+    if (RIWAYAT.tumpuk[k].nama === nama) { i = k; break; }
+  }
+  if (i < 0) return;
+  RIWAYAT.tumpuk.splice(i, 1);
+  RIWAYAT.abaikan = true;                 // jangan jalankan penutup dua kali
+  try { history.back(); } catch (e) { RIWAYAT.abaikan = false; }
+  setTimeout(function () { RIWAYAT.abaikan = false; }, 120);
+}
+
+window.addEventListener('popstate', function () {
+  if (RIWAYAT.abaikan) return;            // dipicu oleh lepasRiwayat, bukan tombol back
+
+  var lapis = RIWAYAT.tumpuk.pop();
+
+  // Lapisan 'jaga' bukan tampilan yang bisa ditutup — ia penanda bahwa pengguna sudah
+  // berada di lapisan terluar. Menekan kembali di sini berarti niat keluar aplikasi.
+  if (lapis && lapis.nama !== 'jaga') {
+    try { lapis.tutup(); } catch (e) { /* abaikan */ }
+    return;
+  }
+
+  // Masih di halaman selain Beranda: pulangkan dulu ke Beranda, jangan keluar.
+  if (halamanAktif !== 'Beranda') {
+    pindahLangsung('Beranda');
+    dorongRiwayat('jaga', function () {});
+    return;
+  }
+
+  // Di Beranda dan tidak ada lapisan lain -> konfirmasi sebelum menutup aplikasi,
+  // supaya perubahan yang belum tersinkron tidak hilang karena salah tekan.
+  var pesan = (S.antrean && S.antrean.length)
+    ? 'Masih ada ' + S.antrean.length + ' perubahan yang belum tersinkron.\n\nTetap keluar dari aplikasi?'
+    : 'Keluar dari aplikasi?';
+
+  if (S.pengguna && !confirm(pesan)) {
+    dorongRiwayat('jaga', function () {});   // pasang lagi: aplikasi tetap terbuka
+    return;
+  }
+  history.back();   // biarkan peramban menutup / kembali ke halaman sebelumnya
+});
+
 function bukaLembar(judul, isiHtml) {
   $('lembarJudul').textContent = judul;
   $('lembarIsi').innerHTML = isiHtml;
+  var sudahTerbuka = !$('lembar').classList.contains('tersembunyi');
   $('lembar').classList.remove('tersembunyi');
   $('tirai').classList.remove('tersembunyi');
+  // Lembar yang menggantikan lembar lain tidak menambah lapisan baru.
+  if (!sudahTerbuka) dorongRiwayat('lembar', tutupLembarLangsung);
 }
-function tutupLembar() {
+function tutupLembarLangsung() {
   $('lembar').classList.add('tersembunyi');
   $('tirai').classList.add('tersembunyi');
+}
+function tutupLembar() {
+  if ($('lembar').classList.contains('tersembunyi')) return;
+  tutupLembarLangsung();
+  lepasRiwayat('lembar');
 }
 $('lembarTutup').onclick = tutupLembar;
 $('tirai').onclick = tutupLembar;
@@ -1148,6 +1215,7 @@ function keluar(paksa, tanpaLapor) {
 
   localStorage.removeItem('gu_token');
   localStorage.removeItem('gu_pengguna');
+  RIWAYAT.tumpuk = [];
   S.token = ''; S.pengguna = null;
   if (S.watchId !== null) { navigator.geolocation.clearWatch(S.watchId); S.watchId = null; }
   hentikanDenyut(true);
@@ -1168,6 +1236,21 @@ $('btnKeluar').onclick = function () {
 
 function pindah(hal) {
   if (hal === 'Peta' && !S.aktif) { toast('Pilih atau buat lahan dulu di Beranda.'); return; }
+
+  // Meninggalkan Beranda = satu lapisan riwayat, supaya tombol kembali ponsel
+  // membawa pengguna pulang ke Beranda, bukan menutup aplikasi.
+  if (hal !== 'Beranda' && halamanAktif === 'Beranda') {
+    dorongRiwayat('halaman', function () { pindahLangsung('Beranda'); });
+  } else if (hal === 'Beranda') {
+    // kembali ke Beranda lewat navigasi bawah: buang lapisan halaman bila ada
+    lepasRiwayat('halaman');
+  }
+
+  pindahLangsung(hal);
+}
+
+/** Perpindahan halaman tanpa menyentuh riwayat (dipakai oleh tombol kembali). */
+function pindahLangsung(hal) {
   halamanAktif = hal;
   ['Beranda', 'Peta', 'Aktivitas', 'Pengaturan'].forEach(function (h) {
     $('hal' + h).classList.toggle('tersembunyi', h !== hal);
@@ -4167,12 +4250,20 @@ function bukaLightbox(src, keterangan) {
   $('lbKeterangan').textContent = keterangan || '';
   LB.skala = 1; LB.x = 0; LB.y = 0;
   terapkanLb();
+  var sudah = !$('lightbox').classList.contains('tersembunyi');
   $('lightbox').classList.remove('tersembunyi');
+  if (!sudah) dorongRiwayat('lightbox', tutupLightboxLangsung);
+}
+
+function tutupLightboxLangsung() {
+  $('lightbox').classList.add('tersembunyi');
+  $('lbGambar').src = '';
 }
 
 function tutupLightbox() {
-  $('lightbox').classList.add('tersembunyi');
-  $('lbGambar').src = '';
+  if ($('lightbox').classList.contains('tersembunyi')) return;
+  tutupLightboxLangsung();
+  lepasRiwayat('lightbox');
 }
 
 function terapkanLb() {
@@ -4854,7 +4945,11 @@ function mulaiAplikasi() {
   $('btnKolab').classList.toggle('nyala', S.kolaborasi);
   simpanAntrean();
   statusJaringan();
-  pindah('Beranda');
+  RIWAYAT.tumpuk = [];            // mulai dari keadaan bersih
+  pindahLangsung('Beranda');
+  // Satu lapisan penjaga: tekan kembali di Beranda tidak langsung menutup aplikasi,
+  // melainkan memunculkan konfirmasi lebih dulu.
+  dorongRiwayat('jaga', function () {});
 }
 
 /* ---------- SETUP URL SERVER (khusus hosting statis) ---------- */
