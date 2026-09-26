@@ -540,7 +540,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 5.0.0 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 5.0.1 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -738,7 +738,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '5.0.0';
+    window.APP_VERSION = '5.0.1';
   </script>
 <script>
 /* ============================================================
@@ -802,6 +802,7 @@ var S = {
   jalurAktif: null,   // jalur yang sedang direkam
   timerJalur: null,
   targetFoto: null,   // {poi_id|jalur_id, nama} saat mengunggah foto
+  generasi: 0,        // dinaikkan tiap login/keluar; jawaban permintaan lama diabaikan
   mbtiles: null,        // { db, nama, mime, minzoom, maxzoom, bounds }
   mbtilesDicoba: false
 };
@@ -929,14 +930,26 @@ function namaPerangkat() {
 
 /* ---------- API ---------- */
 function api(action, payload) {
+  // Generasi sesi saat permintaan DIKIRIM. Jawaban yang datang setelah pengguna keluar
+  // lalu masuk lagi membawa generasi lama — galat sesinya milik sesi yang sudah usai,
+  // bukan sesi sekarang, jadi tidak boleh mengeluarkan pengguna. Tanpa penjagaan ini,
+  // permintaan yang masih melayang saat logout akan menendang pengguna tiap kali login.
+  var gen = S.generasi;
+
   return panggilGas({ action: action, payload: payload || {}, token: S.token })
     .then(function (res) {
       if (res && res.ok) return res.data;
       var pesan = (res && res.error) || 'Kesalahan tidak diketahui.';
-      if (/Sesi (habis|tidak valid)/i.test(pesan)) keluar(true, true);
+      var basi = (gen !== S.generasi);
+
+      if (/Sesi (habis|tidak valid)/i.test(pesan)) {
+        if (basi) throw new Error('Permintaan lama diabaikan.');
+        keluar(true, true);
+      }
 
       // Akun dipakai login di perangkat lain -> sesi di sini sudah digusur server
       if (pesan.indexOf('[SESI-LAIN]') === 0) {
+        if (basi) throw new Error('Permintaan lama diabaikan.');
         keluar(true, true);
         setTimeout(function () {
           alert('Anda dikeluarkan otomatis.\n\nAkun ini baru saja dipakai login di perangkat lain. ' +
@@ -1214,6 +1227,7 @@ function masuk() {
       return r.data;
     })
     .then(function (d) {
+      S.generasi++;               // mulai generasi baru; sisa permintaan lama diabaikan
       S.token = d.token; S.pengguna = d.pengguna; S.config = d.config;
       if (d.lisensi) { S.lisensi = d.lisensi; localStorage.setItem('gu_lisensi', JSON.stringify(d.lisensi)); }
       localStorage.setItem('gu_token', d.token);
@@ -1239,10 +1253,13 @@ function keluar(paksa, tanpaLapor) {
 
   // Lepaskan pendaftaran sesi di server, kalau tidak perangkat lain harus menunggu
   // sesi ini menganggur sekian menit sebelum bisa login.
+  // Sengaja lewat panggilGas, bukan api(): jawabannya datang setelah kita keluar, dan
+  // api() akan menafsirkannya sebagai "sesi tidak sah" lalu memaksa keluar lagi.
   if (!tanpaLapor && S.token && navigator.onLine) {
-    api('keluarSesi', {}).catch(function () {});
+    panggilGas({ action: 'keluarSesi', payload: {}, token: S.token }).catch(function () {});
   }
 
+  S.generasi++;                 // jawaban permintaan lama tidak lagi berlaku
   localStorage.removeItem('gu_token');
   localStorage.removeItem('gu_pengguna');
   RIWAYAT.tumpuk = [];
@@ -4348,6 +4365,17 @@ function kompresLogo(berkas) {
   });
 }
 
+/**
+ * Perkecil foto sebelum diunggah.
+ *
+ * Foto lapangan disimpan di Google Drive (bukan sel Sheets), jadi batas 50.000 karakter
+ * tidak berlaku. Yang membatasi di sini adalah kenyataan lapangan: kamera HP sekarang
+ * menghasilkan 4–12 MB per foto, dan mengunggah sebesar itu lewat sinyal kebun yang lemah
+ * hampir selalu gagal di tengah jalan. Karena itu ukuran ditekan sampai di bawah plafon
+ * dengan menurunkan mutu, lalu memperkecil dimensi bila masih kelewat besar.
+ */
+var PLAFON_FOTO = 700 * 1024;   // ~700 KB sebagai data URI; aman untuk unggah di sinyal lemah
+
 function kompresGambar(berkas, maksSisi, mutu) {
   return new Promise(function (resolve, reject) {
     var img = new Image();
@@ -4355,12 +4383,27 @@ function kompresGambar(berkas, maksSisi, mutu) {
     pembaca.onload = function () { img.src = pembaca.result; };
     pembaca.onerror = function () { reject(new Error('Gagal membaca berkas.')); };
     img.onload = function () {
-      var skala = Math.min(1, maksSisi / Math.max(img.width, img.height));
-      var kanvas = document.createElement('canvas');
-      kanvas.width = Math.round(img.width * skala);
-      kanvas.height = Math.round(img.height * skala);
-      kanvas.getContext('2d').drawImage(img, 0, 0, kanvas.width, kanvas.height);
-      resolve(kanvas.toDataURL('image/jpeg', mutu));
+      var sisi = maksSisi;
+
+      for (var putaran = 0; putaran < 4; putaran++) {
+        var skala = Math.min(1, sisi / Math.max(img.width, img.height));
+        var kanvas = document.createElement('canvas');
+        kanvas.width = Math.max(1, Math.round(img.width * skala));
+        kanvas.height = Math.max(1, Math.round(img.height * skala));
+        kanvas.getContext('2d').drawImage(img, 0, 0, kanvas.width, kanvas.height);
+
+        var m = mutu;
+        var data = kanvas.toDataURL('image/jpeg', m);
+        while (data.length > PLAFON_FOTO && m > 0.4) {
+          m -= 0.1;
+          data = kanvas.toDataURL('image/jpeg', m);
+        }
+        if (data.length <= PLAFON_FOTO) { resolve(data); return; }
+
+        sisi = Math.round(sisi * 0.75);   // masih besar: perkecil dimensinya
+      }
+
+      reject(new Error('Foto terlalu besar untuk diunggah. Coba foto dengan resolusi lebih rendah.'));
     };
     img.onerror = function () { reject(new Error('Format gambar tidak didukung.')); };
     pembaca.readAsDataURL(berkas);
@@ -5148,13 +5191,23 @@ function padTtd(peran, adaTtd) {
     var nama = $('nTtd').value.trim();
     if (!nama) { toast('Nama penanda tangan wajib diisi.', 'galat'); return; }
 
-    // PNG transparan; diperkecil kalau melebihi batas satu sel Sheets
-    var kecil = document.createElement('canvas');
-    kecil.width = 460;
-    kecil.height = Math.round(460 * (kanvas.height / kanvas.width));
-    kecil.getContext('2d').drawImage(kanvas, 0, 0, kecil.width, kecil.height);
-    var data = kecil.toDataURL('image/png');
-    if (data.length > 44000) { toast('Goresan terlalu rumit. Sederhanakan lalu coba lagi.', 'galat'); return; }
+    // PNG transparan, diperkecil BERTAHAP sampai muat di satu sel Sheets (batas 50.000
+    // karakter; kami pakai 44.000 sebagai jarak aman). Versi sebelumnya langsung menolak
+    // goresan yang kelewat besar — tanda tangan yang sudah dibuat jadi hilang percuma.
+    var data = '';
+    var lebarCoba = [460, 380, 320, 260, 200];
+    for (var ci = 0; ci < lebarCoba.length; ci++) {
+      var kecil = document.createElement('canvas');
+      kecil.width = lebarCoba[ci];
+      kecil.height = Math.max(1, Math.round(lebarCoba[ci] * (kanvas.height / kanvas.width)));
+      kecil.getContext('2d').drawImage(kanvas, 0, 0, kecil.width, kecil.height);
+      data = kecil.toDataURL('image/png');
+      if (data.length <= 44000) break;
+    }
+    if (data.length > 44000) {
+      toast('Goresan terlalu rumit untuk disimpan. Coba goreskan lebih sederhana.', 'galat');
+      return;
+    }
 
     tunggu(true, 'Menyimpan tanda tangan...');
     api('simpanTtd', {
