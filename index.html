@@ -250,6 +250,23 @@ button,input,select,textarea{font-family:inherit;font-size:16px} /* 16px = iOS t
 .dok-kecil{background:var(--kertas);border:1px solid var(--garis);border-radius:10px;padding:10px 12px;
   font-size:12px;color:var(--tinta-2)}
 .dok-teks code{background:#F0EEE8;padding:1px 4px;border-radius:4px;font-size:11.5px;font-family:var(--mono)}
+.bilah-jalur{position:absolute;left:10px;right:74px;bottom:calc(148px + var(--aman-bawah));z-index:601;
+  background:rgba(20,24,31,.93);color:#fff;border-radius:12px;padding:9px 12px;display:flex;align-items:center;
+  gap:10px;box-shadow:var(--bayang)}
+.bilah-jalur .bj-teks{flex:1;min-width:0}
+.bilah-jalur b{display:block;font-family:var(--dasar);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bilah-jalur small{font-size:11px;color:#C9CFD8;font-family:var(--mono)}
+.bilah-jalur .btn{flex-shrink:0;background:var(--oranye);color:#fff;border:none}
+.titik-rekam{width:11px;height:11px;border-radius:50%;background:#FF5A47;flex-shrink:0;
+  animation:denyutRekam 1.3s ease-in-out infinite}
+@keyframes denyutRekam{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+.pin-poi{width:26px;height:26px;border-radius:50%;background:#0CA678;color:#fff;display:grid;place-items:center;
+  font-size:13px;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.35)}
+.galeri{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:8px;margin:10px 0}
+.galeri figure{position:relative;margin:0}
+.galeri img{width:100%;height:96px;object-fit:cover;border-radius:10px;display:block;cursor:zoom-in}
+.galeri button{position:absolute;top:4px;right:4px;width:24px;height:24px;border-radius:50%;border:none;
+  background:rgba(20,24,31,.75);color:#fff;font-size:12px;cursor:pointer;line-height:1}
 .kotak-db{background:var(--kertas);border:1px solid var(--garis);border-radius:12px;padding:12px;margin-top:12px}
 .lbl-db{font-size:12px;font-weight:700;color:var(--tinta-2);margin-bottom:6px}
 .lbl-db span{font-weight:400;color:var(--tinta-3)}
@@ -523,7 +540,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 4.4.0 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 5.0.0 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -632,6 +649,13 @@ textarea.inp{min-height:72px;resize:vertical}
         </div>
 
         <!-- Aksi utama bawah -->
+        <!-- Bilah status perekaman jalur; muncul hanya saat merekam -->
+        <div id="bilahJalur" class="bilah-jalur tersembunyi">
+          <span class="titik-rekam"></span>
+          <div class="bj-teks"><b id="bjNama">Jalur</b><small id="bjInfo">0 titik</small></div>
+          <button id="bjSelesai" class="btn btn-kecil">Selesai</button>
+        </div>
+
         <div class="aksi-bawah">
           <button id="btnDaftarTitik" class="ikon-btn kotak" title="Daftar titik">☰</button>
           <button id="btnRekam" class="btn-rekam">
@@ -681,6 +705,8 @@ textarea.inp{min-height:72px;resize:vertical}
   <input type="file" id="inputImpor" accept=".geojson,.json,.csv,.kml,.txt" class="tersembunyi">
   <input type="file" id="inputMbtiles" accept=".mbtiles,.sqlite,.db" class="tersembunyi">
   <input type="file" id="inputOverlay" accept=".zip,.kml,.kmz,.geojson,.json" class="tersembunyi">
+  <!-- multiple: satu POI / jalur boleh punya banyak foto sekaligus -->
+  <input type="file" id="inputFotoObjek" accept="image/*" capture="environment" multiple class="tersembunyi">
   <input type="file" id="inputLogo" accept="image/*" class="tersembunyi">
   <input type="file" id="inputAvatar" accept="image/*" class="tersembunyi">
 
@@ -712,7 +738,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '4.4.0';
+    window.APP_VERSION = '5.0.0';
   </script>
 <script>
 /* ============================================================
@@ -772,6 +798,10 @@ var S = {
   basemapKustom: JSON.parse(localStorage.getItem('gu_basemap_kustom') || '[]'), // {nama,url,jenis,maks}
   overlay: JSON.parse(localStorage.getItem('gu_overlay') || '[]'),  // {id,nama,jenis,data|url,warna,tampil}
   lapisOverlay: {},   // id -> layer Leaflet (label menempel di layer ini)
+  lapisObjek: null,   // layer POI + jalur
+  jalurAktif: null,   // jalur yang sedang direkam
+  timerJalur: null,
+  targetFoto: null,   // {poi_id|jalur_id, nama} saat mengunggah foto
   mbtiles: null,        // { db, nama, mime, minzoom, maxzoom, bounds }
   mbtilesDicoba: false
 };
@@ -1220,6 +1250,8 @@ function keluar(paksa, tanpaLapor) {
   if (S.watchId !== null) { navigator.geolocation.clearWatch(S.watchId); S.watchId = null; }
   hentikanDenyut(true);
   clearInterval(S.timerObrolan);
+  clearInterval(S.timerJalur);
+  S.jalurAktif = null;
   $('aplikasi').classList.add('tersembunyi');
   $('layarLogin').classList.remove('tersembunyi');
 }
@@ -1483,6 +1515,20 @@ function gantiBasemap(idx) {
 
   if (b.jenis === 'grid') {
     lapisBasemap = new LapisGrid({ maxZoom: 22, attribution: b.kredit }).addTo(S.peta);
+  } else if (b.jenis === 'pmtiles') {
+    // Arsip PMTiles dimuat asinkron; tampilkan grid dulu supaya peta tidak kosong.
+    lapisBasemap = new LapisGrid({ maxZoom: 22, attribution: b.kredit }).addTo(S.peta);
+    var idxMinta = S.basemapIdx;
+    pastikanPmtiles()
+      .then(function () {
+        if (S.basemapIdx !== idxMinta) return;        // pengguna sudah ganti peta lain
+        var lp = buatLapisPmtiles(b.url, { maks: b.maks, min: b.min, kredit: b.kredit });
+        if (lapisBasemap) S.peta.removeLayer(lapisBasemap);
+        lapisBasemap = lp.addTo(S.peta);
+        if (S.lapisPoligon) S.lapisPoligon.bringToFront();
+        pasangUlangOverlay();
+      })
+      .catch(function (e) { toast(e.message, 'galat'); });
   } else if (b.jenis === 'arcgis') {
     // ArcGIS REST MapServer -> export image per ubin (256px)
     lapisBasemap = L.tileLayer(
@@ -1718,6 +1764,508 @@ function panelLisensiAktivasi() {
     })
     .catch(function (e) { toast(e.message, 'galat'); })
     .then(function () { tunggu(false); });
+}
+
+/* ============================================================
+   TITIK PENTING (POI) & JALUR / TRACK
+   Objek pelengkap di luar batas bidang: POI = satu koordinat + banyak foto,
+   JALUR = rangkaian koordinat (polyline) + banyak foto.
+   ============================================================ */
+var KATEGORI_POI = ['Patok BPN', 'Sumur', 'Bangunan', 'Pohon Acuan', 'Gorong-gorong',
+                    'Batas Alam', 'Kerusakan', 'Lainnya'];
+var KATEGORI_JALUR = ['Jalan', 'Parit / Saluran', 'Sungai', 'Batas Alam', 'Rute Inspeksi', 'Lainnya'];
+
+/* ---------- Menggambar di peta ---------- */
+function gambarObjek() {
+  if (!S.peta) return;
+  if (!S.lapisObjek) S.lapisObjek = L.layerGroup().addTo(S.peta);
+  S.lapisObjek.clearLayers();
+  if (!S.aktif) return;
+
+  (S.aktif.poi || []).forEach(function (p, i) {
+    L.marker([p.lat, p.lng], {
+      icon: L.divIcon({
+        className: '', iconSize: [26, 26], iconAnchor: [13, 13],
+        html: '<div class="pin-poi" title="' + esc(p.nama) + '">' + ikonKategori(p.kategori) + '</div>'
+      })
+    }).addTo(S.lapisObjek).on('click', function () { panelDetailPoi(p.poi_id); });
+  });
+
+  (S.aktif.jalur || []).forEach(function (j) {
+    if (!j.titik || j.titik.length < 2) return;
+    L.polyline(j.titik.map(function (t) { return [t.lat, t.lng]; }), {
+      color: '#1B6AA8', weight: 4, opacity: 0.85, dashArray: '10,6'
+    }).addTo(S.lapisObjek).on('click', function () { panelDetailJalur(j.jalur_id); })
+      .bindTooltip(j.nama + ' — ' + jarakTeks(j.panjang_m), { sticky: true });
+  });
+
+  // Jalur yang sedang direkam digambar terpisah supaya terlihat tumbuh langsung.
+  if (S.jalurAktif && S.jalurAktif.titik.length >= 2) {
+    L.polyline(S.jalurAktif.titik.map(function (t) { return [t.lat, t.lng]; }), {
+      color: '#E8590C', weight: 5, opacity: 0.95
+    }).addTo(S.lapisObjek);
+  }
+}
+
+function ikonKategori(k) {
+  var peta = {
+    'Patok BPN': '\u25B2', 'Sumur': '\u25CF', 'Bangunan': '\u25A0', 'Pohon Acuan': '\u2663',
+    'Gorong-gorong': '\u2588', 'Batas Alam': '\u25C6', 'Kerusakan': '\u26A0'
+  };
+  return peta[k] || '\u25C6';
+}
+
+function jarakTeks(m) {
+  m = Number(m) || 0;
+  return m >= 1000 ? (m / 1000).toFixed(3) + ' km' : m.toFixed(1) + ' m';
+}
+
+/* ---------- Rekam titik penting ---------- */
+function rekamPoi() {
+  if (!S.aktif) { toast('Buka bidang dulu.', 'galat'); return; }
+  if (!bisaTulis()) { toast('Peran "viewer" hanya bisa melihat.', 'galat'); return; }
+  var c = S.posisi ? S.posisi.coords : null;
+  if (!c) { toast('Menunggu sinyal GPS...', 'galat'); return; }
+
+  formPoi({ lat: c.latitude, lng: c.longitude, akurasi: c.accuracy, elevasi: c.altitude });
+}
+
+function formPoi(awal, poiAda) {
+  var p = poiAda || {};
+  bukaLembar(poiAda ? 'Ubah Titik Penting' : 'Titik Penting Baru',
+    '<div class="grup"><label class="lbl">Nama</label>' +
+      '<input id="poNama" class="inp" placeholder="mis. Sumur bor utara" value="' + esc(p.nama || '') + '"></div>' +
+    '<div class="grup"><label class="lbl">Kategori</label><select id="poKat" class="inp">' +
+      KATEGORI_POI.map(function (k) {
+        return '<option' + (k === (p.kategori || 'Lainnya') ? ' selected' : '') + '>' + k + '</option>';
+      }).join('') + '</select></div>' +
+    '<div class="grup"><label class="lbl">Keterangan</label>' +
+      '<textarea id="poCat" class="inp" rows="2" placeholder="kondisi, ukuran, catatan lain">' +
+      esc(p.catatan || '') + '</textarea></div>' +
+    '<div class="kotak-db"><div class="lbl-db">Koordinat</div><div class="isi-db">' +
+      Number(awal.lat).toFixed(7) + ', ' + Number(awal.lng).toFixed(7) +
+      (awal.akurasi ? ' &middot; akurasi ' + Number(awal.akurasi).toFixed(1) + ' m' : '') +
+      '</div></div>' +
+    '<div class="aksi-baris"><button class="btn" id="poBatal">Batal</button>' +
+    '<button class="btn btn-utama" id="poSimpan">Simpan</button></div>');
+
+  $('poBatal').onclick = tutupLembar;
+  $('poSimpan').onclick = function () {
+    var muatan = {
+      lahan_id: S.aktif.lahan.lahan_id,
+      nama: $('poNama').value.trim() || 'Titik Penting',
+      kategori: $('poKat').value,
+      catatan: $('poCat').value.trim(),
+      lat: awal.lat, lng: awal.lng, akurasi: awal.akurasi || 0,
+      elevasi: (awal.elevasi === null || awal.elevasi === undefined) ? '' : awal.elevasi
+    };
+    tunggu(true, 'Menyimpan...');
+    var janji = poiAda
+      ? api('ubahPoi', Object.assign({ poi_id: p.poi_id }, muatan))
+      : api('simpanPoi', muatan);
+
+    janji.then(function (d) {
+        tutupLembar();
+        return muatUlangObjek().then(function () {
+          if (!poiAda && d && d.poi_id) {
+            toast('Titik penting tersimpan. Tambahkan foto?', 'sukses');
+            panelDetailPoi(d.poi_id);
+          } else toast('Tersimpan.', 'sukses');
+        });
+      })
+      .catch(function (e) { toast(e.message, 'galat'); })
+      .then(function () { tunggu(false); });
+  };
+}
+
+function panelDetailPoi(poiId) {
+  var p = (S.aktif.poi || []).filter(function (x) { return x.poi_id === poiId; })[0];
+  if (!p) return;
+
+  var foto = (p.foto || []).length
+    ? '<div class="galeri">' + p.foto.map(function (f) {
+        return '<figure><img class="bisa-zoom" data-zoom="' + esc(f.url) + '" data-cap="' + esc(p.nama) + '" src="' + esc(f.url) + '">' +
+          (bisaTulis() ? '<button data-hapus-foto="' + esc(f.lampiran_id) + '">&#10005;</button>' : '') + '</figure>';
+      }).join('') + '</div>'
+    : '<div class="kosong"><b>Belum ada foto</b>Tambahkan foto dokumentasi untuk titik ini.</div>';
+
+  bukaLembar(p.nama,
+    '<div class="identify-kepala"><span class="ov-warna" style="background:#0CA678"></span>' +
+    '<div><b>' + esc(p.kategori) + '</b><small>' + p.lat.toFixed(7) + ', ' + p.lng.toFixed(7) +
+    (p.akurasi ? ' &middot; \u00B1' + p.akurasi.toFixed(1) + ' m' : '') + '</small></div></div>' +
+    (p.catatan ? '<p style="font-size:13px;line-height:1.55">' + esc(p.catatan) + '</p>' : '') +
+    foto +
+    '<div class="aksi-baris">' +
+      '<button class="btn" id="poZoom">Zoom</button>' +
+      (bisaTulis() ? '<button class="btn" id="poUbah">Ubah</button>' +
+        '<button class="btn btn-utama" id="poFoto">+ Foto</button>' : '') +
+    '</div>' +
+    (bisaTulis() ? '<button class="btn btn-bahaya btn-lebar" id="poHapus">Hapus titik penting</button>' : ''));
+
+  $('poZoom').onclick = function () {
+    tutupLembar();
+    S.ikuti = false; $('btnIkuti').classList.remove('nyala');
+    S.peta.setView([p.lat, p.lng], Math.max(S.peta.getZoom(), 19));
+  };
+  if ($('poUbah')) $('poUbah').onclick = function () { formPoi(p, p); };
+  if ($('poFoto')) $('poFoto').onclick = function () {
+    S.targetFoto = { poi_id: p.poi_id, nama: p.nama };
+    $('inputFotoObjek').click();
+  };
+  if ($('poHapus')) $('poHapus').onclick = function () {
+    if (!confirm('Hapus "' + p.nama + '" beserta fotonya?')) return;
+    tunggu(true, 'Menghapus...');
+    api('hapusPoi', { poi_id: p.poi_id })
+      .then(function () { tutupLembar(); return muatUlangObjek(); })
+      .then(function () { toast('Titik penting dihapus.'); })
+      .catch(function (e) { toast(e.message, 'galat'); })
+      .then(function () { tunggu(false); });
+  };
+  pasangAksiFotoObjek();
+}
+
+/* ---------- Rekam jalur / track ---------- */
+var JEDA_JALUR = 4000;          // rekam titik tiap 4 detik saat berjalan
+var MIN_GESER_JALUR = 3;        // meter; di bawah ini dianggap diam, titik tidak ditambah
+var BATAS_ANTREAN_JALUR = 15;   // kirim ke server tiap 15 titik agar hemat kuota
+
+function mulaiRekamJalur() {
+  if (!S.aktif) { toast('Buka bidang dulu.', 'galat'); return; }
+  if (!bisaTulis()) { toast('Peran "viewer" hanya bisa melihat.', 'galat'); return; }
+  if (S.jalurAktif) { panelJalurBerjalan(); return; }
+
+  bukaLembar('Mulai Rekam Jalur',
+    '<div class="grup"><label class="lbl">Nama jalur</label>' +
+      '<input id="jlNama" class="inp" placeholder="mis. Jalan kebun blok utara"></div>' +
+    '<div class="grup"><label class="lbl">Kategori</label><select id="jlKat" class="inp">' +
+      KATEGORI_JALUR.map(function (k) { return '<option>' + k + '</option>'; }).join('') + '</select></div>' +
+    '<div class="grup"><label class="lbl">Keterangan</label>' +
+      '<textarea id="jlCat" class="inp" rows="2" placeholder="lebar, kondisi, catatan"></textarea></div>' +
+    '<p class="jejak" style="text-align:left;line-height:1.55">Titik direkam otomatis tiap ' +
+    (JEDA_JALUR / 1000) + ' detik selama Anda berjalan. Berhenti di tempat tidak menambah titik, ' +
+    'jadi jalur tidak menumpuk saat Anda diam.</p>' +
+    '<div class="aksi-baris"><button class="btn" id="jlBatal">Batal</button>' +
+    '<button class="btn btn-utama" id="jlMulai">Mulai rekam</button></div>');
+
+  $('jlBatal').onclick = tutupLembar;
+  $('jlMulai').onclick = function () {
+    tunggu(true, 'Menyiapkan jalur...');
+    api('mulaiJalur', {
+      lahan_id: S.aktif.lahan.lahan_id,
+      nama: $('jlNama').value.trim() || 'Jalur Baru',
+      kategori: $('jlKat').value,
+      catatan: $('jlCat').value.trim()
+    })
+      .then(function (d) {
+        S.jalurAktif = {
+          jalur_id: d.jalur_id, nama: $('jlNama').value.trim() || 'Jalur Baru',
+          titik: [], antre: [], panjang: 0
+        };
+        tutupLembar();
+        jalankanPerekamJalur();
+        toast('Perekaman jalur dimulai.', 'sukses');
+      })
+      .catch(function (e) { toast(e.message, 'galat'); })
+      .then(function () { tunggu(false); });
+  };
+}
+
+function jalankanPerekamJalur() {
+  clearInterval(S.timerJalur);
+  perbaruiBilahJalur();
+  S.timerJalur = setInterval(function () {
+    if (!S.jalurAktif) { clearInterval(S.timerJalur); return; }
+    var c = S.posisi ? S.posisi.coords : null;
+    if (!c) return;
+
+    var t = { lat: c.latitude, lng: c.longitude, akurasi: c.accuracy || 0,
+              elevasi: c.altitude === null ? '' : c.altitude, waktu: new Date().toISOString() };
+    var akhir = S.jalurAktif.titik[S.jalurAktif.titik.length - 1];
+
+    // Abaikan titik saat diam: GPS selalu bergoyang beberapa meter walau tidak bergerak,
+    // dan tanpa saringan ini jalur akan penuh titik menumpuk di satu tempat.
+    if (akhir) {
+      var d = jarakMeterKlien(akhir.lat, akhir.lng, t.lat, t.lng);
+      if (d < MIN_GESER_JALUR) return;
+      S.jalurAktif.panjang += d;
+    }
+
+    S.jalurAktif.titik.push(t);
+    S.jalurAktif.antre.push(t);
+    gambarObjek();
+    perbaruiBilahJalur();
+
+    if (S.jalurAktif.antre.length >= BATAS_ANTREAN_JALUR) kirimAntreanJalur();
+  }, JEDA_JALUR);
+}
+
+function kirimAntreanJalur() {
+  if (!S.jalurAktif || !S.jalurAktif.antre.length || !navigator.onLine) return Promise.resolve();
+  var kirim = S.jalurAktif.antre.splice(0, S.jalurAktif.antre.length);
+  var id = S.jalurAktif.jalur_id;
+  return api('simpanTitikJalur', { jalur_id: id, titik: kirim })
+    .then(function (d) {
+      if (S.jalurAktif && S.jalurAktif.jalur_id === id && d.panjang_m) {
+        S.jalurAktif.panjang = d.panjang_m;
+        perbaruiBilahJalur();
+      }
+    })
+    .catch(function () {
+      // Gagal kirim: kembalikan ke antrean supaya dicoba lagi, jangan sampai titik hilang.
+      if (S.jalurAktif && S.jalurAktif.jalur_id === id) {
+        S.jalurAktif.antre = kirim.concat(S.jalurAktif.antre);
+      }
+    });
+}
+
+function perbaruiBilahJalur() {
+  var b = $('bilahJalur');
+  if (!b) return;
+  if (!S.jalurAktif) { b.classList.add('tersembunyi'); return; }
+  b.classList.remove('tersembunyi');
+  $('bjNama').textContent = S.jalurAktif.nama;
+  $('bjInfo').textContent = S.jalurAktif.titik.length + ' titik \u00B7 ' + jarakTeks(S.jalurAktif.panjang) +
+    (S.jalurAktif.antre.length ? ' \u00B7 ' + S.jalurAktif.antre.length + ' menunggu kirim' : '');
+}
+
+function panelJalurBerjalan() {
+  if (!S.jalurAktif) return;
+  bukaLembar('Sedang Merekam Jalur',
+    '<div class="identify-kepala"><span class="ov-warna" style="background:#E8590C"></span>' +
+    '<div><b>' + esc(S.jalurAktif.nama) + '</b><small>' + S.jalurAktif.titik.length + ' titik &middot; ' +
+    jarakTeks(S.jalurAktif.panjang) + '</small></div></div>' +
+    '<p class="jejak" style="text-align:left">Perekaman berjalan di latar selama halaman Peta terbuka.</p>' +
+    '<div class="aksi-baris">' +
+      '<button class="btn" id="jbTutup">Lanjut merekam</button>' +
+      '<button class="btn btn-utama" id="jbSelesai">Selesaikan jalur</button></div>' +
+    '<button class="btn btn-bahaya btn-lebar" id="jbBatal">Batalkan &amp; hapus jalur</button>');
+
+  $('jbTutup').onclick = tutupLembar;
+  $('jbSelesai').onclick = selesaikanJalur;
+  $('jbBatal').onclick = function () {
+    if (!confirm('Batalkan perekaman dan hapus jalur ini?')) return;
+    var id = S.jalurAktif.jalur_id;
+    hentikanPerekamJalur();
+    tunggu(true, 'Menghapus...');
+    api('hapusJalur', { jalur_id: id })
+      .then(function () { tutupLembar(); return muatUlangObjek(); })
+      .then(function () { toast('Jalur dibatalkan.'); })
+      .catch(function (e) { toast(e.message, 'galat'); })
+      .then(function () { tunggu(false); });
+  };
+}
+
+function hentikanPerekamJalur() {
+  clearInterval(S.timerJalur);
+  S.jalurAktif = null;
+  perbaruiBilahJalur();
+  gambarObjek();
+}
+
+function selesaikanJalur() {
+  if (!S.jalurAktif) return;
+  var id = S.jalurAktif.jalur_id;
+  if (S.jalurAktif.titik.length < 2) {
+    toast('Jalur butuh minimal 2 titik. Berjalanlah dulu beberapa meter.', 'galat');
+    return;
+  }
+  tunggu(true, 'Menyimpan jalur...');
+  kirimAntreanJalur()
+    .then(function () { return api('selesaikanJalur', { jalur_id: id }); })
+    .then(function () {
+      hentikanPerekamJalur();
+      tutupLembar();
+      return muatUlangObjek();
+    })
+    .then(function () { toast('Jalur tersimpan.', 'sukses'); panelDetailJalur(id); })
+    .catch(function (e) { toast(e.message, 'galat'); })
+    .then(function () { tunggu(false); });
+}
+
+function panelDetailJalur(jalurId) {
+  var j = (S.aktif.jalur || []).filter(function (x) { return x.jalur_id === jalurId; })[0];
+  if (!j) return;
+
+  var foto = (j.foto || []).length
+    ? '<div class="galeri">' + j.foto.map(function (f) {
+        return '<figure><img class="bisa-zoom" data-zoom="' + esc(f.url) + '" data-cap="' + esc(j.nama) + '" src="' + esc(f.url) + '">' +
+          (bisaTulis() ? '<button data-hapus-foto="' + esc(f.lampiran_id) + '">&#10005;</button>' : '') + '</figure>';
+      }).join('') + '</div>'
+    : '<div class="kosong"><b>Belum ada foto</b>Tambahkan foto kondisi jalur.</div>';
+
+  bukaLembar(j.nama,
+    '<div class="identify-kepala"><span class="ov-warna" style="background:#1B6AA8"></span>' +
+    '<div><b>' + esc(j.kategori) + '</b><small>' + jarakTeks(j.panjang_m) + ' &middot; ' +
+    j.jumlah_titik + ' titik</small></div></div>' +
+    (j.catatan ? '<p style="font-size:13px;line-height:1.55">' + esc(j.catatan) + '</p>' : '') +
+    foto +
+    '<div class="aksi-baris">' +
+      '<button class="btn" id="jdZoom">Zoom</button>' +
+      (bisaTulis() ? '<button class="btn btn-utama" id="jdFoto">+ Foto</button>' : '') +
+    '</div>' +
+    (bisaTulis() ? '<button class="btn btn-bahaya btn-lebar" id="jdHapus">Hapus jalur</button>' : ''));
+
+  $('jdZoom').onclick = function () {
+    tutupLembar();
+    try {
+      S.ikuti = false; $('btnIkuti').classList.remove('nyala');
+      S.peta.fitBounds(L.latLngBounds(j.titik.map(function (t) { return [t.lat, t.lng]; })).pad(0.2));
+    } catch (e) {}
+  };
+  if ($('jdFoto')) $('jdFoto').onclick = function () {
+    S.targetFoto = { jalur_id: j.jalur_id, nama: j.nama };
+    $('inputFotoObjek').click();
+  };
+  if ($('jdHapus')) $('jdHapus').onclick = function () {
+    if (!confirm('Hapus jalur "' + j.nama + '" beserta titik dan fotonya?')) return;
+    tunggu(true, 'Menghapus...');
+    api('hapusJalur', { jalur_id: j.jalur_id })
+      .then(function () { tutupLembar(); return muatUlangObjek(); })
+      .then(function () { toast('Jalur dihapus.'); })
+      .catch(function (e) { toast(e.message, 'galat'); })
+      .then(function () { tunggu(false); });
+  };
+  pasangAksiFotoObjek();
+}
+
+/* ---------- Foto untuk POI & jalur (banyak sekaligus) ---------- */
+$('bjSelesai').onclick = selesaikanJalur;
+
+$('inputFotoObjek').onchange = function (e) {
+  var berkas = Array.prototype.slice.call(e.target.files || []);
+  if (!berkas.length || !S.targetFoto) return;
+  var target = S.targetFoto;
+  var total = berkas.length, selesai = 0, gagal = 0;
+
+  tunggu(true, 'Mengunggah 0/' + total + ' foto...');
+  // Diunggah berurutan, bukan serentak: Apps Script punya batas permintaan bersamaan,
+  // dan sinyal lapangan sering lemah sehingga unggahan paralel justru sering gagal.
+  berkas.reduce(function (rantai, f, idx) {
+    return rantai.then(function () {
+      $('tungguTeks').textContent = 'Mengunggah ' + (idx + 1) + '/' + total + ' foto...';
+      return kompresGambar(f, 1280, 0.72).then(function (dataUrl) {
+        var c = S.posisi ? S.posisi.coords : null;
+        return api('unggahLampiran', {
+          lahan_id: S.aktif.lahan.lahan_id,
+          poi_id: target.poi_id || '', jalur_id: target.jalur_id || '',
+          nama_file: (target.poi_id ? 'poi_' : 'jalur_') + Date.now() + '_' + (idx + 1) + '.jpg',
+          mime: 'image/jpeg', data_base64: dataUrl,
+          lat: c ? c.latitude : '', lng: c ? c.longitude : '',
+          catatan: target.nama || ''
+        });
+      }).then(function () { selesai++; }).catch(function () { gagal++; });
+    });
+  }, Promise.resolve())
+  .then(function () { return muatUlangObjek(); })
+  .then(function () {
+    tunggu(false);
+    $('inputFotoObjek').value = '';
+    S.targetFoto = null;
+    toast(selesai + ' foto tersimpan' + (gagal ? ', ' + gagal + ' gagal' : '') + '.', gagal ? 'galat' : 'sukses');
+    if (target.poi_id) panelDetailPoi(target.poi_id);
+    else if (target.jalur_id) panelDetailJalur(target.jalur_id);
+  });
+};
+
+/** Pasang aksi zoom foto & hapus foto pada panel detail yang sedang terbuka. */
+function pasangAksiFotoObjek() {
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-zoom]'), function (g) {
+    g.onclick = function () { bukaLightbox(g.dataset.zoom, g.dataset.cap); };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-hapus-foto]'), function (b) {
+    b.onclick = function (ev) {
+      ev.stopPropagation();
+      if (!confirm('Hapus foto ini?')) return;
+      tunggu(true, 'Menghapus foto...');
+      api('hapusLampiran', { lampiran_id: b.dataset.hapusFoto })
+        .then(function () { return muatUlangObjek(); })
+        .then(function () { tutupLembar(); toast('Foto dihapus.'); })
+        .catch(function (e) { toast(e.message, 'galat'); })
+        .then(function () { tunggu(false); });
+    };
+  });
+}
+
+/** Muat ulang POI & jalur dari server lalu gambar ulang peta. */
+function muatUlangObjek() {
+  if (!S.aktif) return Promise.resolve();
+  return api('detailLahan', { lahan_id: S.aktif.lahan.lahan_id })
+    .then(function (d) {
+      S.aktif = d;
+      localStorage.setItem('gu_cache_' + d.lahan.lahan_id, JSON.stringify(d));
+      gambarObjek();
+      perbaruiPapan();
+    })
+    .catch(function () { /* offline: biarkan data lama */ });
+}
+
+/** Jarak dua koordinat di sisi klien (haversine) — untuk saringan titik jalur. */
+function jarakMeterKlien(lat1, lng1, lat2, lng2) {
+  var R = 6378137, rad = Math.PI / 180;
+  var dLat = (lat2 - lat1) * rad, dLng = (lng2 - lng1) * rad;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/* ---------- Panel daftar objek ---------- */
+function panelObjek(tab) {
+  var t = tab || 'poi';
+  var poi = (S.aktif && S.aktif.poi) || [];
+  var jalur = (S.aktif && S.aktif.jalur) || [];
+
+  var isi = '<div class="tab-ruang" id="tabObjek">' +
+    '<button data-t="poi" class="' + (t === 'poi' ? 'pilih' : '') + '">Titik Penting' +
+      (poi.length ? ' (' + poi.length + ')' : '') + '</button>' +
+    '<button data-t="jalur" class="' + (t === 'jalur' ? 'pilih' : '') + '">Jalur' +
+      (jalur.length ? ' (' + jalur.length + ')' : '') + '</button></div>';
+
+  if (t === 'poi') {
+    isi += poi.length
+      ? poi.map(function (p) {
+          return '<div class="ov-baris" data-poi="' + esc(p.poi_id) + '"><div class="ov-atas">' +
+            '<span class="ov-warna" style="background:#0CA678"></span>' +
+            '<div class="ov-nama"><b>' + esc(p.nama) + '</b><small>' + esc(p.kategori) + ' &middot; ' +
+            (p.foto || []).length + ' foto</small></div>' +
+            '<button class="btn btn-kecil">Buka</button></div></div>';
+        }).join('')
+      : '<div class="kosong"><b>Belum ada titik penting</b>Rekam sumur, patok BPN, bangunan, atau objek lain di dalam bidang.</div>';
+    isi += bisaTulis() ? '<button class="btn btn-utama btn-lebar" id="obTambahPoi">+ Rekam titik penting di posisi saya</button>' : '';
+  } else {
+    isi += jalur.length
+      ? jalur.map(function (j) {
+          return '<div class="ov-baris" data-jalur="' + esc(j.jalur_id) + '"><div class="ov-atas">' +
+            '<span class="ov-warna" style="background:#1B6AA8"></span>' +
+            '<div class="ov-nama"><b>' + esc(j.nama) + '</b><small>' + esc(j.kategori) + ' &middot; ' +
+            jarakTeks(j.panjang_m) + ' &middot; ' + (j.foto || []).length + ' foto</small></div>' +
+            '<button class="btn btn-kecil">Buka</button></div></div>';
+        }).join('')
+      : '<div class="kosong"><b>Belum ada jalur</b>Rekam jalan kebun, parit, atau batas alam sambil berjalan.</div>';
+    isi += bisaTulis()
+      ? '<button class="btn btn-utama btn-lebar" id="obTambahJalur">' +
+        (S.jalurAktif ? 'Lihat perekaman berjalan' : '+ Mulai rekam jalur') + '</button>'
+      : '';
+  }
+
+  isi += '<p class="jejak" style="text-align:left;line-height:1.55">Titik penting dan jalur ikut tercetak ' +
+    'di berita acara: sebagai tabel koordinat, gambar pada sketsa, dan lampiran foto.</p>';
+
+  bukaLembar('Objek Lapangan', isi);
+
+  Array.prototype.forEach.call($('tabObjek').children, function (b) {
+    b.onclick = function () { panelObjek(b.dataset.t); };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-poi]'), function (el) {
+    el.onclick = function () { panelDetailPoi(el.dataset.poi); };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-jalur]'), function (el) {
+    el.onclick = function () { panelDetailJalur(el.dataset.jalur); };
+  });
+  if ($('obTambahPoi')) $('obTambahPoi').onclick = function () { tutupLembar(); rekamPoi(); };
+  if ($('obTambahJalur')) $('obTambahJalur').onclick = function () {
+    tutupLembar();
+    if (S.jalurAktif) panelJalurBerjalan(); else mulaiRekamJalur();
+  };
 }
 
 /* ---------- TENTANG & LISENSI ---------- */
@@ -1976,6 +2524,91 @@ function diagnostikPeta() {
   };
 }
 
+/* ============================================================
+   PMTILES — satu berkas arsip ubin, dibaca langsung lewat HTTP range request.
+   Cocok untuk citra kebun/drone: satu berkas .pmtiles di hosting statis (GitHub Pages,
+   Cloudflare R2, S3) menggantikan ratusan ribu berkas ubin terpisah, dan tidak perlu
+   server ubin sendiri. Aplikasi hanya mengambil potongan yang sedang dilihat.
+
+   Catatan: hanya PMTiles RASTER (png/jpg/webp) yang dapat digambar Leaflet. PMTiles
+   vektor (mvt) memerlukan mesin peta vektor terpisah — akan diberitahukan bila terdeteksi.
+   ============================================================ */
+var PMTILES_SUMBER = ['lib/pmtiles.js', 'https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js'];
+var _pmtilesSiap = null;
+
+function pastikanPmtiles() {
+  if (window.pmtiles) return Promise.resolve();
+  if (_pmtilesSiap) return _pmtilesSiap;
+
+  _pmtilesSiap = PMTILES_SUMBER.reduce(function (rantai, url) {
+    return rantai.catch(function () {
+      return muatSkrip(url).then(function () {
+        if (!window.pmtiles) throw new Error('termuat tapi pmtiles tidak tersedia');
+      });
+    });
+  }, Promise.reject())
+  .catch(function () {
+    _pmtilesSiap = null;
+    throw new Error('Gagal memuat pustaka PMTiles. Pastikan berkas lib/pmtiles.js ikut diunggah, ' +
+      'atau perangkat terhubung internet saat pertama memakainya.');
+  });
+  return _pmtilesSiap;
+}
+
+/** Lapisan Leaflet yang mengambil ubin dari arsip .pmtiles. */
+function buatLapisPmtiles(url, opsi) {
+  opsi = opsi || {};
+  var arsip = new window.pmtiles.PMTiles(url);
+
+  var Lapis = L.GridLayer.extend({
+    createTile: function (coords, selesai) {
+      var img = document.createElement('img');
+      img.alt = '';
+      arsip.getZxy(coords.z, coords.x, coords.y)
+        .then(function (ubin) {
+          if (!ubin || !ubin.data) { selesai(null, img); return; }   // ubin kosong: wajar
+          var blob = new Blob([ubin.data]);
+          img.src = URL.createObjectURL(blob);
+          img.onload = function () { URL.revokeObjectURL(img.src); selesai(null, img); };
+          img.onerror = function () { selesai(null, img); };
+        })
+        .catch(function (e) { selesai(null, img); });
+      return img;
+    }
+  });
+
+  return new Lapis({
+    maxZoom: opsi.maks || 20,
+    minZoom: opsi.min || 0,
+    attribution: opsi.kredit || 'PMTiles',
+    tileSize: 256
+  });
+}
+
+/**
+ * Periksa arsip sebelum dipakai: pastikan dapat dibaca, dan pastikan isinya raster.
+ * Mengembalikan metadata (zoom min/maks, batas wilayah) untuk mengisi form otomatis.
+ */
+function periksaPmtiles(url) {
+  return pastikanPmtiles().then(function () {
+    var arsip = new window.pmtiles.PMTiles(url);
+    return arsip.getHeader().then(function (h) {
+      // 1 = mvt (vektor), 2 = png, 3 = jpeg, 4 = webp, 5 = avif
+      var jenis = h.tileType;
+      if (jenis === 1) {
+        throw new Error('Arsip ini berisi ubin VEKTOR (mvt). Aplikasi hanya dapat menampilkan ' +
+          'PMTiles raster (png/jpg/webp). Ekspor ulang sebagai raster di QGIS/GDAL.');
+      }
+      return {
+        min: h.minZoom, maks: h.maxZoom,
+        lat: (h.minLat + h.maxLat) / 2, lng: (h.minLon + h.maxLon) / 2,
+        batas: [[h.minLat, h.minLon], [h.maxLat, h.maxLon]],
+        jenis: ({ 2: 'PNG', 3: 'JPEG', 4: 'WebP', 5: 'AVIF' })[jenis] || 'raster'
+      };
+    });
+  });
+}
+
 /* ---------- Form tambah peta dasar (XYZ / ArcGIS REST) ---------- */
 function formTambahBasemap() {
   bukaLembar('Tambah Peta Dasar',
@@ -1983,6 +2616,7 @@ function formTambahBasemap() {
     '<div class="tab-ruang" id="jenisBm">' +
       '<button data-j="xyz" class="pilih">XYZ Tile</button>' +
       '<button data-j="arcgis">ArcGIS REST</button>' +
+      '<button data-j="pmtiles">PMTiles</button>' +
     '</div>' +
     '<div class="grup"><label class="lbl">Nama</label>' +
       '<input id="bmNama" class="inp" placeholder="mis. Citra BPN / RBI"></div>' +
@@ -1991,6 +2625,7 @@ function formTambahBasemap() {
     '<div class="grup"><label class="lbl">Zoom maksimum</label>' +
       '<input id="bmMaks" class="inp" type="number" value="19" min="1" max="23"></div>' +
     '<p id="bmContoh" class="jejak" style="text-align:left;line-height:1.5"></p>' +
+    '<button class="btn btn-lebar tersembunyi" id="bmUji" style="margin-top:0">Periksa arsip PMTiles</button>' +
     '<div class="aksi-baris"><button class="btn" id="bmBatal">Batal</button>' +
     '<button class="btn btn-utama" id="bmSimpan">Tambah</button></div>');
 
@@ -2002,13 +2637,23 @@ function formTambahBasemap() {
       $('bmContoh').innerHTML = 'Pakai penanda <b>{z}/{x}/{y}</b>. Contoh Google Satelit: ' +
         '<code>https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}</code>. ' +
         'Sumber XYZ apa pun bisa (BPN, RBI, dsb) selama formatnya {z}/{x}/{y}.';
-    } else {
+    } else if (jenis === 'arcgis') {
       $('bmLabelUrl').textContent = 'URL ArcGIS MapServer';
       $('bmUrl').placeholder = 'https://server/ArcGIS/rest/services/.../MapServer';
       $('bmContoh').innerHTML = 'Tempel URL <b>MapServer</b> (tanpa /tile di belakang). ' +
         'Aplikasi menambahkan <code>/tile/{z}/{y}/{x}</code> otomatis. ' +
         'Hanya berlaku untuk layanan yang berbasis ubin (tiled), bukan dynamic.';
+    } else {
+      $('bmLabelUrl').textContent = 'URL berkas .pmtiles';
+      $('bmUrl').placeholder = 'https://situs-anda.com/citra-kebun.pmtiles';
+      $('bmContoh').innerHTML = 'Satu berkas arsip berisi seluruh ubin — cocok untuk citra drone ' +
+        'atau peta kebun sendiri. Unggah ke hosting statis (GitHub Pages, Cloudflare R2, S3) ' +
+        'yang mendukung <b>HTTP range request</b> dan <b>CORS</b>. ' +
+        'Buat dengan: <code>gdal_translate ... citra.mbtiles</code> lalu ' +
+        '<code>pmtiles convert citra.mbtiles citra.pmtiles</code>. ' +
+        'Hanya arsip <b>raster</b> (png/jpg/webp) yang didukung.';
     }
+    $('bmUji').classList.toggle('tersembunyi', jenis !== 'pmtiles');
   }
   perbaruiContoh();
 
@@ -2020,6 +2665,22 @@ function formTambahBasemap() {
     };
   });
 
+  $('bmUji').onclick = function () {
+    var url = $('bmUrl').value.trim();
+    if (!url) { toast('Tempel URL berkas .pmtiles dulu.', 'galat'); return; }
+    tunggu(true, 'Memeriksa arsip...');
+    periksaPmtiles(url)
+      .then(function (m) {
+        S._pmMeta = { url: url, min: m.min, maks: m.maks };
+        $('bmMaks').value = m.maks;
+        $('bmContoh').innerHTML = '<b style="color:#0A6B4B">Arsip terbaca.</b> Jenis ubin ' + esc(m.jenis) +
+          ', zoom ' + m.min + '–' + m.maks + '. Pusat: ' + m.lat.toFixed(5) + ', ' + m.lng.toFixed(5) + '.';
+        toast('Arsip PMTiles valid.', 'sukses');
+      })
+      .catch(function (e) { toast(e.message, 'galat'); })
+      .then(function () { tunggu(false); });
+  };
+
   $('bmBatal').onclick = function () { gambarPilihPeta('dasar'); };
   $('bmSimpan').onclick = function () {
     var nama = $('bmNama').value.trim();
@@ -2028,10 +2689,19 @@ function formTambahBasemap() {
     if (jenis === 'xyz' && !/\{z\}.*\{x\}.*\{y\}|\{z\}.*\{y\}.*\{x\}/.test(url)) {
       toast('URL XYZ harus memuat {z}, {x}, dan {y}.', 'galat'); return;
     }
-    if (jenis === 'arcgis' && !/\/MapServer\/?$/i.test(url) && !/MapServer/i.test(url)) {
+    if (jenis === 'arcgis' && !/MapServer/i.test(url)) {
       toast('URL ArcGIS harus mengarah ke .../MapServer.', 'galat'); return;
     }
-    S.basemapKustom.push({ nama: nama, url: url, jenis: jenis, maks: parseInt($('bmMaks').value, 10) || 19 });
+    if (jenis === 'pmtiles' && !/\.pmtiles(\?|$)/i.test(url)) {
+      toast('URL harus menunjuk ke berkas berakhiran .pmtiles', 'galat'); return;
+    }
+    var item = { nama: nama, url: url, jenis: jenis, maks: parseInt($('bmMaks').value, 10) || 19 };
+    if (jenis === 'pmtiles' && S._pmMeta && S._pmMeta.url === url) {
+      item.min = S._pmMeta.min;
+      item.maks = S._pmMeta.maks;
+      item.kredit = nama;
+    }
+    S.basemapKustom.push(item);
     localStorage.setItem('gu_basemap_kustom', JSON.stringify(S.basemapKustom));
     gambarPilihPeta('dasar');
     toast('Peta "' + nama + '" ditambahkan.', 'sukses');
@@ -2544,8 +3214,13 @@ function isiPetaDasar() {
   var isi = semua.map(function (b, i) {
     var bawaan = i < BASEMAP.length;
     return '<button class="pilih-peta' + (S.basemapIdx === i ? ' aktif' : '') + '" data-i="' + i + '">' +
-      '<span class="em">' + (i === 0 ? '&#128506;' : i === 1 ? '&#128739;' : bawaan ? '&#9968;' : '&#127760;') + '</span>' +
-      '<span><b>' + esc(b.nama) + '</b><small>' + (b.jenis === 'arcgis' ? 'ArcGIS REST' : bawaan ? 'Butuh internet' : 'XYZ tile') +
+      '<span class="em">' + (b.jenis === 'pmtiles' ? '&#128230;'
+        : i === 0 ? '&#128506;' : i === 1 ? '&#128739;' : bawaan ? '&#9968;' : '&#127760;') + '</span>' +
+      '<span><b>' + esc(b.nama) + '</b><small>' +
+      (b.jenis === 'arcgis' ? 'ArcGIS REST'
+        : b.jenis === 'pmtiles' ? 'PMTiles — satu berkas arsip'
+        : b.jenis === 'grid' ? 'Tanpa layanan luar'
+        : bawaan ? 'Butuh internet' : 'XYZ tile') +
       '</small></span>' +
       (bawaan ? '' : '<button class="ikon-btn" data-hapus-bm="' + i + '" style="margin-left:auto">&#10005;</button>') +
       '</button>';
@@ -2696,6 +3371,7 @@ function gambarPeta(paskan) {
   });
 
   perbaruiPapan();
+  gambarObjek();
   if (S.lapisTetangga) gambarTetangga();
 
   if (paskan && T.length) zoomKeBidang(true);
@@ -3114,6 +3790,13 @@ function registriAlat() {
     { id: 'foto', ikon: '&#128247;', judul: 'Dokumentasi foto', sub: (S.aktif && S.aktif.lampiran || []).length + ' foto tersimpan' },
     { id: 'ttd', ikon: '&#9997;', judul: 'Tanda tangan digital', sub: (S.aktif && S.aktif.ttd || []).length + ' dari 3 pihak menandatangani' },
     { id: 'zoombidang', ikon: '&#9974;', judul: 'Zoom ke bidang', sub: 'Bawa peta ke seluruh titik bidang ini' },
+    { id: 'poi', ikon: '&#128205;', judul: 'Rekam titik penting',
+      sub: 'Sumur, patok BPN, bangunan — satu koordinat + foto' },
+    { id: 'jalur', ikon: '&#128736;', judul: S.jalurAktif ? 'Perekaman jalur berjalan' : 'Rekam jalur / track',
+      sub: S.jalurAktif ? S.jalurAktif.titik.length + ' titik terekam' : 'Jalan kebun, parit, batas alam + foto' },
+    { id: 'objek', ikon: '&#128203;', judul: 'Daftar objek lapangan',
+      sub: ((S.aktif && S.aktif.poi || []).length) + ' titik penting, ' +
+           ((S.aktif && S.aktif.jalur || []).length) + ' jalur' },
     { id: 'obrolan', ikon: '&#128172;', judul: 'Obrolan tim', sub: (S.baruUmum + S.baruLahan) ? (S.baruUmum + S.baruLahan) + ' pesan belum dibaca' : 'Ruang umum & ruang bidang ini' },
     { id: 'tumpang', ikon: '&#9888;', judul: 'Periksa tumpang tindih', sub: S.konflik.length ? S.konflik.length + ' bidang bertindihan' : 'Bandingkan dengan bidang surveyor lain' },
     { id: 'kolab', ikon: '&#128101;', judul: S.kolaborasi ? 'Matikan kolaborasi' : 'Nyalakan kolaborasi', sub: S.kolaborasi ? 'Rekan & bidang sekitar tampil di peta' : 'Tampilkan rekan surveyor & bidang sekitar' },
@@ -3263,6 +3946,9 @@ function jalankanAlat(aksi) {
   if (aksi === 'ttd') return panelTtd();
   if (aksi === 'kunci') { tutupLembar(); $('btnKunci').click(); return; }
   if (aksi === 'zoombidang') { tutupLembar(); zoomKeBidang(false); return; }
+  if (aksi === 'poi') { tutupLembar(); rekamPoi(); return; }
+  if (aksi === 'jalur') { tutupLembar(); if (S.jalurAktif) panelJalurBerjalan(); else mulaiRekamJalur(); return; }
+  if (aksi === 'objek') { panelObjek(); return; }
   if (aksi === 'obrolan') { panelObrolan(S.baruLahan && S.aktif ? 'lahan' : 'umum'); return; }
   if (aksi === 'tumpang') return panelTumpang();
   if (aksi === 'kolab') { tutupLembar(); $('btnKolab').click(); setTimeout(gambarPinAlat, 0); return; }
@@ -3323,7 +4009,16 @@ Array.prototype.forEach.call(document.querySelectorAll('#bilahStatus .chip'), fu
 
     // Draf & Aktif tidak perlu konfirmasi — keduanya memang status "boleh merekam".
     // Jeda/Selesai menghentikan segala aktivitas rekam, termasuk rekam otomatis.
-    if (st === 'Dijeda' || st === 'Selesai') matikanAutoRekam(true);
+    if (st === 'Dijeda' || st === 'Selesai') {
+      matikanAutoRekam(true);
+      // Perekaman jalur juga dihentikan: status Jeda/Selesai berarti tidak ada
+      // aktivitas perekaman apa pun di bidang ini.
+      if (S.jalurAktif) {
+        kirimAntreanJalur();
+        api('selesaikanJalur', { jalur_id: S.jalurAktif.jalur_id }).catch(function () {});
+        hentikanPerekamJalur();
+      }
+    }
 
     ubahStatus(st, '');
   };
