@@ -267,6 +267,11 @@ button,input,select,textarea{font-family:inherit;font-size:16px} /* 16px = iOS t
 .galeri img{width:100%;height:96px;object-fit:cover;border-radius:10px;display:block;cursor:zoom-in}
 .galeri button{position:absolute;top:4px;right:4px;width:24px;height:24px;border-radius:50%;border:none;
   background:rgba(20,24,31,.75);color:#fff;font-size:12px;cursor:pointer;line-height:1}
+.baris-koord{display:flex;gap:10px;margin-bottom:10px}
+.baris-koord>div{flex:1;min-width:0}
+.pisah-lapisan{font-size:11.5px;font-weight:700;color:var(--tinta-3);text-transform:uppercase;
+  letter-spacing:.04em;margin:14px 0 8px;padding-top:12px;border-top:1px solid var(--garis)}
+.ov-label input[type=range]{accent-color:var(--oranye)}
 .kotak-db{background:var(--kertas);border:1px solid var(--garis);border-radius:12px;padding:12px;margin-top:12px}
 .lbl-db{font-size:12px;font-weight:700;color:var(--tinta-2);margin-bottom:6px}
 .lbl-db span{font-weight:400;color:var(--tinta-3)}
@@ -540,7 +545,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 5.0.1 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 5.1.0 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -707,6 +712,7 @@ textarea.inp{min-height:72px;resize:vertical}
   <input type="file" id="inputOverlay" accept=".zip,.kml,.kmz,.geojson,.json" class="tersembunyi">
   <!-- multiple: satu POI / jalur boleh punya banyak foto sekaligus -->
   <input type="file" id="inputFotoObjek" accept="image/*" capture="environment" multiple class="tersembunyi">
+  <input type="file" id="inputPdfPeta" accept="application/pdf,.pdf" class="tersembunyi">
   <input type="file" id="inputLogo" accept="image/*" class="tersembunyi">
   <input type="file" id="inputAvatar" accept="image/*" class="tersembunyi">
 
@@ -738,7 +744,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '5.0.1';
+    window.APP_VERSION = '5.1.0';
   </script>
 <script>
 /* ============================================================
@@ -799,6 +805,8 @@ var S = {
   overlay: JSON.parse(localStorage.getItem('gu_overlay') || '[]'),  // {id,nama,jenis,data|url,warna,tampil}
   lapisOverlay: {},   // id -> layer Leaflet (label menempel di layer ini)
   lapisObjek: null,   // layer POI + jalur
+  pdfPeta: JSON.parse(localStorage.getItem('gu_pdf_peta') || '[]'),  // lapisan PDF
+  lapisPdf: {},       // id -> L.imageOverlay
   jalurAktif: null,   // jalur yang sedang direkam
   timerJalur: null,
   targetFoto: null,   // {poi_id|jalur_id, nama} saat mengunggah foto
@@ -1498,6 +1506,7 @@ function siapkanPeta() {
   S.lapisTitik = L.layerGroup().addTo(S.peta);
   gambarPinAlat();
   pasangUlangOverlay();
+  pasangUlangPdf();
 
   S.peta.on('click', function (e) {
     if (!S.modeTap || !bolehEdit()) return;
@@ -1575,6 +1584,7 @@ function gantiBasemap(idx) {
   localStorage.setItem('gu_basemap', String(S.basemapIdx));
   if (S.lapisPoligon) S.lapisPoligon.bringToFront();
   pasangUlangOverlay();
+  pasangUlangPdf();
 }
 
 /** Peta dari penyedia berlangganan milik pemilik sistem (aktif hanya bila kunci diisi). */
@@ -2331,9 +2341,10 @@ function isiTentang(nama, instansi) {
     '</table>' +
 
     '<p style="font-size:12.5px;line-height:1.6;color:var(--tinta-2);margin-top:14px">' +
-    '<b>Komponen sumber terbuka.</b> Aplikasi ini memakai Leaflet 1.9.4 (BSD 2-Clause), ' +
-    'shpjs 4.0.4 (MIT), dan sql.js (MIT). Teks lisensi lengkap disertakan dalam paket pemasangan ' +
-    'pada berkas <code>LISENSI-PIHAK-KETIGA.txt</code>.</p>' +
+    '<b>Komponen sumber terbuka.</b> Aplikasi ini memakai Leaflet (BSD 2-Clause), shpjs (MIT), ' +
+    'sql.js (MIT), PMTiles (BSD 3-Clause), dan pdf.js (Apache 2.0, &copy; Mozilla Foundation). ' +
+    'Teks lisensi lengkap disertakan dalam paket pemasangan pada berkas ' +
+    '<code>LISENSI-PIHAK-KETIGA.txt</code>.</p>' +
 
     '<p style="font-size:12.5px;line-height:1.6;color:var(--tinta-2)">' +
     '<b>Peta dasar.</b> Aplikasi tidak menyertakan layanan peta pihak ketiga. Citra satelit dan peta jalan ' +
@@ -2538,6 +2549,241 @@ function diagnostikPeta() {
       toast('Peta dimuat ulang.');
       tutupLembar();
     } catch (e) { toast('Gagal memuat peta: ' + e.message, 'galat'); }
+  };
+}
+
+/* ============================================================
+   LAPISAN PDF BERGEOREFERENSI (GeoPDF / Geospatial PDF)
+
+   PDF dibuka dua tahap:
+     1. Halaman digambar jadi gambar memakai pdf.js.
+     2. Georeferensi dicari dari struktur /VP -> /Measure (Subtype /GEO) yang memuat
+        /GPTS (koordinat lat-lon tiap sudut) dan /LPTS (posisi sudut itu di halaman).
+
+   Yang perlu dipahami: TIDAK semua PDF punya georeferensi. PDF hasil pindai atau cetakan
+   peta biasa hanya berisi gambar tanpa koordinat sama sekali. Karena itu aplikasi juga
+   menyediakan penempatan manual — dan dalam praktik survei di Indonesia jalur manual ini
+   justru yang paling sering terpakai, karena banyak lampiran peta dari instansi berupa
+   PDF biasa.
+   ============================================================ */
+var PDFJS_SUMBER = ['lib/pdf.min.js', 'https://unpkg.com/pdfjs-dist@3.11.174/legacy/build/pdf.min.js'];
+var PDFJS_PEKERJA = ['lib/pdf.worker.min.js', 'https://unpkg.com/pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js'];
+var _pdfjsSiap = null;
+
+function pastikanPdfjs() {
+  if (window.pdfjsLib) return Promise.resolve();
+  if (_pdfjsSiap) return _pdfjsSiap;
+
+  _pdfjsSiap = PDFJS_SUMBER.reduce(function (rantai, url, i) {
+    return rantai.catch(function () {
+      return muatSkrip(url).then(function () {
+        if (!window.pdfjsLib) throw new Error('termuat tapi pdfjsLib tidak ada');
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS_PEKERJA[i];
+      });
+    });
+  }, Promise.reject())
+  .catch(function () {
+    _pdfjsSiap = null;
+    throw new Error('Gagal memuat pustaka PDF. Pastikan lib/pdf.min.js dan lib/pdf.worker.min.js ' +
+      'ikut diunggah, atau perangkat terhubung internet saat pertama memakainya.');
+  });
+  return _pdfjsSiap;
+}
+
+/** Ambil blok /GPTS + /LPTS dari teks struktur PDF. */
+function uraiGeoPdfDariTeks(teks) {
+  var hasil = [];
+  var re = /\/GPTS\s*\[([-\d.\seE+]+)\]/g, m;
+  while ((m = re.exec(teks))) {
+    var gpts = m[1].trim().split(/\s+/).map(Number).filter(function (n) { return isFinite(n); });
+    if (gpts.length < 8) continue;
+
+    var lat = [], lng = [];
+    for (var i = 0; i + 1 < gpts.length; i += 2) { lat.push(gpts[i]); lng.push(gpts[i + 1]); }
+
+    // Saringan kewarasan: GPTS menurut spesifikasi adalah lat/lon derajat.
+    var masukAkal = lat.every(function (v) { return v >= -90 && v <= 90; }) &&
+                    lng.every(function (v) { return v >= -180 && v <= 180; });
+    if (!masukAkal) continue;
+
+    hasil.push({
+      batas: [[Math.min.apply(null, lat), Math.min.apply(null, lng)],
+              [Math.max.apply(null, lat), Math.max.apply(null, lng)]]
+    });
+  }
+  return hasil;
+}
+
+/** Inflate aliran terkompresi agar /GPTS yang tersembunyi di object stream ikut terbaca. */
+function inflateSemua(bytes) {
+  if (typeof DecompressionStream === 'undefined') return Promise.resolve('');
+  var teks = new TextDecoder('latin1').decode(bytes);
+  var potongan = [];
+  var re = /stream\r?\n/g, m;
+  while ((m = re.exec(teks)) && potongan.length < 40) {
+    var mulai = m.index + m[0].length;
+    var akhir = teks.indexOf('endstream', mulai);
+    if (akhir < 0) continue;
+    potongan.push(bytes.slice(mulai, akhir));
+  }
+
+  return Promise.all(potongan.map(function (p) {
+    try {
+      var ds = new DecompressionStream('deflate');
+      return new Response(new Blob([p]).stream().pipeThrough(ds)).text().catch(function () { return ''; });
+    } catch (e) { return Promise.resolve(''); }
+  })).then(function (a) { return a.join('\n'); })
+    .catch(function () { return ''; });
+}
+
+/** Baca PDF: gambar halaman 1 + cari georeferensinya. */
+function bacaPdfPeta(berkas) {
+  return pastikanPdfjs().then(function () {
+    return berkas.arrayBuffer();
+  }).then(function (ab) {
+    var bytes = new Uint8Array(ab);
+
+    var gambarJanji = window.pdfjsLib.getDocument({ data: bytes.slice(0) }).promise
+      .then(function (pdf) { return pdf.getPage(1); })
+      .then(function (hal) {
+        // Skala dibatasi supaya gambar tidak melebihi ~2400 px — cukup tajam saat
+        // diperbesar, tapi tidak membuat peramban HP kehabisan memori.
+        var dasar = hal.getViewport({ scale: 1 });
+        var skala = Math.min(3, 2400 / Math.max(dasar.width, dasar.height));
+        var vp = hal.getViewport({ scale: skala });
+        var k = document.createElement('canvas');
+        k.width = Math.round(vp.width); k.height = Math.round(vp.height);
+        return hal.render({ canvasContext: k.getContext('2d'), viewport: vp }).promise
+          .then(function () { return k.toDataURL('image/png'); });
+      });
+
+    var geoJanji = Promise.resolve(uraiGeoPdfDariTeks(new TextDecoder('latin1').decode(bytes)))
+      .then(function (g) {
+        if (g.length) return g;
+        return inflateSemua(bytes).then(function (t) { return t ? uraiGeoPdfDariTeks(t) : []; });
+      });
+
+    return Promise.all([gambarJanji, geoJanji]).then(function (r) {
+      return { gambar: r[0], geo: r[1][0] || null };
+    });
+  });
+}
+
+/* ---------- PDF sebagai lapisan gambar di peta ---------- */
+
+function pasangSatuPdf(item) {
+  if (S.lapisPdf[item.id]) { S.peta.removeLayer(S.lapisPdf[item.id]); delete S.lapisPdf[item.id]; }
+  if (!item.tampil || !S.peta) return;
+
+  S.lapisPdf[item.id] = L.imageOverlay(item.gambar, item.batas, {
+    opacity: item.buram === undefined ? 0.75 : item.buram,
+    interactive: false
+  }).addTo(S.peta);
+
+  if (S.lapisPoligon) S.lapisPoligon.bringToFront();
+  if (S.lapisObjek) S.lapisObjek.bringToFront();
+}
+
+function pasangUlangPdf() { (S.pdfPeta || []).forEach(pasangSatuPdf); }
+
+function simpanPdfPeta() {
+  // Gambar PDF bisa besar (beberapa MB sebagai data URI). localStorage berkapasitas
+  // ~5 MB, jadi bila penuh kami beri tahu dengan jelas daripada gagal diam-diam.
+  try {
+    localStorage.setItem('gu_pdf_peta', JSON.stringify(S.pdfPeta));
+    return true;
+  } catch (e) {
+    toast('Penyimpanan perangkat penuh — lapisan PDF tidak tersimpan permanen. ' +
+          'Hapus lapisan PDF lama lalu coba lagi.', 'galat');
+    return false;
+  }
+}
+
+$('inputPdfPeta').onchange = function (e) {
+  var berkas = e.target.files[0];
+  if (!berkas) return;
+  var nama = berkas.name.replace(/\.pdf$/i, '');
+  tunggu(true, 'Membaca PDF...');
+
+  bacaPdfPeta(berkas)
+    .then(function (r) {
+      tunggu(false);
+      if (r.geo) {
+        tambahPdfKePeta(nama, r.gambar, r.geo.batas, true);
+      } else {
+        // Tanpa georeferensi: tawarkan penempatan manual, jangan langsung menolak.
+        formPdfManual(nama, r.gambar);
+      }
+    })
+    .catch(function (err) { tunggu(false); toast(err.message, 'galat'); })
+    .then(function () { $('inputPdfPeta').value = ''; });
+};
+
+function tambahPdfKePeta(nama, gambar, batas, otomatis) {
+  var item = {
+    id: 'pdf_' + Date.now().toString(36),
+    nama: nama, gambar: gambar, batas: batas,
+    buram: 0.75, tampil: true, otomatis: !!otomatis
+  };
+  S.pdfPeta.push(item);
+  if (!simpanPdfPeta()) S.pdfPeta.pop();
+  pasangSatuPdf(item);
+  try { S.peta.fitBounds(L.latLngBounds(batas).pad(0.1)); } catch (e) {}
+  toast(otomatis
+    ? 'PDF bergeoreferensi terpasang otomatis.'
+    : 'PDF ditempatkan. Sesuaikan batasnya bila perlu.', 'sukses');
+  gambarPilihPeta('lapisan');
+}
+
+/**
+ * Penempatan manual untuk PDF tanpa georeferensi. Bawaannya mengikuti tampilan peta
+ * saat ini — surveyor tinggal menggeser/memperbesar peta ke lokasi yang benar lebih dulu,
+ * lalu merapikan angkanya. Jauh lebih cepat daripada mengetik empat koordinat dari nol.
+ */
+function formPdfManual(nama, gambar, itemAda) {
+  var b = itemAda ? itemAda.batas : (function () {
+    var v = S.peta.getBounds().pad(-0.15);
+    return [[v.getSouth(), v.getWest()], [v.getNorth(), v.getEast()]];
+  })();
+
+  bukaLembar(itemAda ? 'Sesuaikan Posisi PDF' : 'Tempatkan PDF di Peta',
+    (itemAda ? '' :
+      '<div class="dok-kecil">PDF ini <b>tidak memuat georeferensi</b>, jadi posisinya harus ' +
+      'ditentukan sendiri. Nilai di bawah mengikuti tampilan peta Anda sekarang.</div>') +
+    '<div class="grup"><label class="lbl">Nama lapisan</label>' +
+      '<input id="pmNama" class="inp" value="' + esc(itemAda ? itemAda.nama : nama) + '"></div>' +
+    '<div class="baris-koord">' +
+      '<div><label class="lbl">Lintang utara</label><input id="pmU" class="inp" type="number" step="any" value="' + b[1][0] + '"></div>' +
+      '<div><label class="lbl">Lintang selatan</label><input id="pmS" class="inp" type="number" step="any" value="' + b[0][0] + '"></div>' +
+    '</div>' +
+    '<div class="baris-koord">' +
+      '<div><label class="lbl">Bujur barat</label><input id="pmB" class="inp" type="number" step="any" value="' + b[0][1] + '"></div>' +
+      '<div><label class="lbl">Bujur timur</label><input id="pmT" class="inp" type="number" step="any" value="' + b[1][1] + '"></div>' +
+    '</div>' +
+    '<p class="jejak" style="text-align:left;line-height:1.55">Cara tercepat: tutup panel ini, geser ' +
+    'dan perbesar peta sampai pas dengan cakupan PDF, lalu buka lagi — angkanya mengikuti tampilan peta.</p>' +
+    '<div class="aksi-baris"><button class="btn" id="pmBatal">Batal</button>' +
+    '<button class="btn btn-utama" id="pmSimpan">' + (itemAda ? 'Perbarui' : 'Tempatkan') + '</button></div>');
+
+  $('pmBatal').onclick = tutupLembar;
+  $('pmSimpan').onclick = function () {
+    var u = parseFloat($('pmU').value), s = parseFloat($('pmS').value);
+    var bb = parseFloat($('pmB').value), t = parseFloat($('pmT').value);
+    if (![u, s, bb, t].every(isFinite)) { toast('Semua koordinat wajib diisi angka.', 'galat'); return; }
+    if (u <= s || t <= bb) { toast('Utara harus di atas selatan, timur di kanan barat.', 'galat'); return; }
+
+    var batas = [[s, bb], [u, t]];
+    tutupLembar();
+    if (itemAda) {
+      itemAda.batas = batas;
+      itemAda.nama = $('pmNama').value.trim() || itemAda.nama;
+      simpanPdfPeta();
+      pasangSatuPdf(itemAda);
+      gambarPilihPeta('lapisan');
+      toast('Posisi PDF diperbarui.');
+    } else {
+      tambahPdfKePeta($('pmNama').value.trim() || nama, gambar, batas, false);
+    }
   };
 }
 
@@ -2749,8 +2995,31 @@ function isiLapisan() {
       }).join('')
     : '<div class="kosong"><b>Belum ada lapisan</b>Tambahkan batas desa, rencana blok, atau data lain sebagai overlay di atas peta.</div>';
 
+  // --- lapisan PDF ---
+  if ((S.pdfPeta || []).length) {
+    isi += '<div class="pisah-lapisan">Peta PDF</div>' + S.pdfPeta.map(function (p) {
+      return '<div class="ov-baris" data-pdf="' + esc(p.id) + '">' +
+        '<div class="ov-atas">' +
+          '<span class="ov-warna" style="background:#B4232D">&#128196;</span>' +
+          '<div class="ov-nama"><b>' + esc(p.nama) + '</b><small>PDF &middot; ' +
+          (p.otomatis ? 'georeferensi otomatis' : 'ditempatkan manual') + '</small></div>' +
+          '<button class="btn btn-kecil" data-pdf-zoom="' + esc(p.id) + '">Zoom</button>' +
+          '<button class="btn btn-kecil ' + (p.tampil ? 'btn-utama' : '') + '" data-pdf-toggle="' + esc(p.id) + '">' +
+          (p.tampil ? 'Tampil' : 'Sembunyi') + '</button>' +
+          '<button class="ikon-btn" data-pdf-hapus="' + esc(p.id) + '">&#10005;</button>' +
+        '</div>' +
+        '<div class="ov-label">' +
+          '<label class="ov-cek" style="flex:1">Transparansi' +
+          '<input type="range" min="10" max="100" value="' + Math.round((p.buram === undefined ? 0.75 : p.buram) * 100) +
+          '" data-pdf-buram="' + esc(p.id) + '" style="flex:1;margin-left:8px"></label>' +
+          '<button class="btn btn-kecil" data-pdf-posisi="' + esc(p.id) + '">Posisi</button>' +
+        '</div></div>';
+    }).join('');
+  }
+
   isi += '<div style="margin-top:14px;border-top:1px solid var(--garis);padding-top:12px">' +
     '<button class="btn btn-utama btn-lebar" id="ovTambah" style="margin-top:0">+ Tambah lapisan (SHP / KML)</button>' +
+    '<button class="btn btn-lebar" id="pdfTambah">+ Tambah peta PDF (GeoPDF)</button>' +
     '<p class="jejak" style="text-align:left;line-height:1.5">Format didukung: <b>.zip</b> berisi shapefile ' +
     '(shp+shx+dbf, WGS84/EPSG:4326), <b>.kml</b>, dan <b>.geojson</b>. Lapisan menumpuk di atas peta ' +
     'dan tersimpan di perangkat ini. Untuk shapefile dengan proyeksi lain (mis. UTM), ekspor dulu ke ' +
@@ -2760,6 +3029,48 @@ function isiLapisan() {
 
 function pasangAksiLapisan() {
   if ($('ovTambah')) $('ovTambah').onclick = function () { $('inputOverlay').click(); };
+  if ($('pdfTambah')) $('pdfTambah').onclick = function () { $('inputPdfPeta').click(); };
+
+  var cariPdf = function (id) {
+    return S.pdfPeta.filter(function (x) { return x.id === id; })[0];
+  };
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-pdf-toggle]'), function (b) {
+    b.onclick = function () {
+      var p = cariPdf(b.dataset.pdfToggle);
+      p.tampil = !p.tampil; simpanPdfPeta(); pasangSatuPdf(p); gambarPilihPeta('lapisan');
+    };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-pdf-zoom]'), function (b) {
+    b.onclick = function () {
+      var p = cariPdf(b.dataset.pdfZoom);
+      tutupLembar();
+      try { S.peta.fitBounds(L.latLngBounds(p.batas).pad(0.1)); } catch (e) {}
+    };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-pdf-buram]'), function (r) {
+    r.oninput = function () {
+      var p = cariPdf(r.dataset.pdfBuram);
+      p.buram = Number(r.value) / 100;
+      if (S.lapisPdf[p.id]) S.lapisPdf[p.id].setOpacity(p.buram);
+    };
+    r.onchange = function () { simpanPdfPeta(); };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-pdf-posisi]'), function (b) {
+    b.onclick = function () {
+      var p = cariPdf(b.dataset.pdfPosisi);
+      formPdfManual(p.nama, p.gambar, p);
+    };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-pdf-hapus]'), function (b) {
+    b.onclick = function () {
+      var p = cariPdf(b.dataset.pdfHapus);
+      if (!confirm('Hapus lapisan PDF "' + p.nama + '"?')) return;
+      if (S.lapisPdf[p.id]) { S.peta.removeLayer(S.lapisPdf[p.id]); delete S.lapisPdf[p.id]; }
+      S.pdfPeta = S.pdfPeta.filter(function (x) { return x.id !== p.id; });
+      simpanPdfPeta();
+      gambarPilihPeta('lapisan');
+    };
+  });
 
   Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-toggle]'), function (b) {
     b.onclick = function () {
@@ -3213,7 +3524,8 @@ function gambarPilihPeta(tab) {
   var isi = '<div class="tab-ruang" id="tabPeta">' +
     '<button data-t="dasar" class="' + (tabPeta === 'dasar' ? 'pilih' : '') + '">Peta Dasar</button>' +
     '<button data-t="lapisan" class="' + (tabPeta === 'lapisan' ? 'pilih' : '') + '">Lapisan' +
-      (S.overlay.length ? ' (' + S.overlay.length + ')' : '') + '</button></div>';
+      ((S.overlay.length + (S.pdfPeta || []).length)
+        ? ' (' + (S.overlay.length + (S.pdfPeta || []).length) + ')' : '') + '</button></div>';
 
   isi += (tabPeta === 'dasar') ? isiPetaDasar() : isiLapisan();
   bukaLembar('Peta & Lapisan', isi);

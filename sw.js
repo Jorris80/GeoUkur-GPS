@@ -5,7 +5,7 @@
  * - Ubin peta online di-cache saat lewat (stale-while-revalidate) sebagai pelengkap MBTiles.
  * - Panggilan API (POST) tidak pernah di-cache; itu urusan antrean offline di dalam aplikasi.
  */
-const VERSI = 'geoukur-v5.0.1';
+const VERSI = 'geoukur-v5.1.0';
 const CANGKANG = VERSI + '-cangkang';
 const UBIN = VERSI + '-ubin';
 const MAKS_UBIN = 600;
@@ -20,6 +20,8 @@ const ASET = [
   './lib/leaflet.js',
   './lib/shp.min.js',
   './lib/pmtiles.js',
+  // pdf.min.js & pdf.worker.min.js sengaja TIDAK di-precache (~1,5 MB):
+  // hanya diunduh saat pengguna benar-benar membuka lapisan PDF.
   'https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.wasm'
 ];
 
