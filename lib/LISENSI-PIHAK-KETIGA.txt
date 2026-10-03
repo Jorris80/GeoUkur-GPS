@@ -100,6 +100,25 @@ Dilisensikan di bawah Apache License, Version 2.0.
 Salinan lisensi: http://www.apache.org/licenses/LICENSE-2.0
 Kode sumber: https://github.com/mozilla/pdf.js
 
+-----------------------------------------------------------------
+6) geotiff.js — MIT License
+-----------------------------------------------------------------
+https://github.com/geotiffjs/geotiff.js (disertakan di dalam bundel georaster)
+
+-----------------------------------------------------------------
+7) georaster & georaster-layer-for-leaflet — Apache License 2.0
+-----------------------------------------------------------------
+Copyright GeoTIFF / Daniel J. Dufour.
+https://github.com/GeoTIFF/georaster
+https://github.com/GeoTIFF/georaster-layer-for-leaflet
+
+-----------------------------------------------------------------
+8) proj4js — MIT License
+-----------------------------------------------------------------
+Copyright (c) 2014, Mike Adair, Richard Greenwood, Didier Richard,
+Stephen Irons, Olivier Terral and Calvin Metcalf.
+https://github.com/proj4js/proj4js
+
 =================================================================
 CATATAN PENTING TENTANG PETA DASAR
 =================================================================

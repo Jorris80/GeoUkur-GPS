@@ -553,7 +553,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 5.1.1 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 5.2.0 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -721,6 +721,7 @@ textarea.inp{min-height:72px;resize:vertical}
   <!-- multiple: satu POI / jalur boleh punya banyak foto sekaligus -->
   <input type="file" id="inputFotoObjek" accept="image/*" capture="environment" multiple class="tersembunyi">
   <input type="file" id="inputPdfPeta" accept="application/pdf,.pdf" class="tersembunyi">
+  <input type="file" id="inputTifPeta" accept=".tif,.tiff,.geotiff,image/tiff" class="tersembunyi">
   <input type="file" id="inputLogo" accept="image/*" class="tersembunyi">
   <input type="file" id="inputAvatar" accept="image/*" class="tersembunyi">
 
@@ -752,7 +753,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '5.1.1';
+    window.APP_VERSION = '5.2.0';
   </script>
 <script>
 /* ============================================================
@@ -815,6 +816,8 @@ var S = {
   lapisObjek: null,   // layer POI + jalur
   pdfPeta: JSON.parse(localStorage.getItem('gu_pdf_peta') || '[]'),  // lapisan PDF
   lapisPdf: {},       // id -> L.imageOverlay
+  tifPeta: JSON.parse(localStorage.getItem('gu_tif_peta') || '[]'),  // lapisan GeoTIFF
+  lapisTif: {},       // id -> GeoRasterLayer
   jalurAktif: null,   // jalur yang sedang direkam
   timerJalur: null,
   targetFoto: null,   // {poi_id|jalur_id, nama} saat mengunggah foto
@@ -1515,6 +1518,7 @@ function siapkanPeta() {
   gambarPinAlat();
   pasangUlangOverlay();
   pasangUlangPdf();
+  pasangUlangTif();
 
   S.peta.on('click', function (e) {
     if (!S.modeTap || !bolehEdit()) return;
@@ -1593,6 +1597,7 @@ function gantiBasemap(idx) {
   if (S.lapisPoligon) S.lapisPoligon.bringToFront();
   pasangUlangOverlay();
   pasangUlangPdf();
+  pasangUlangTif();
 }
 
 /** Peta dari penyedia berlangganan milik pemilik sistem (aktif hanya bila kunci diisi). */
@@ -2350,7 +2355,8 @@ function isiTentang(nama, instansi) {
 
     '<p style="font-size:12.5px;line-height:1.6;color:var(--tinta-2);margin-top:14px">' +
     '<b>Komponen sumber terbuka.</b> Aplikasi ini memakai Leaflet (BSD 2-Clause), shpjs (MIT), ' +
-    'sql.js (MIT), PMTiles (BSD 3-Clause), dan pdf.js (Apache 2.0, &copy; Mozilla Foundation). ' +
+    'sql.js (MIT), PMTiles (BSD 3-Clause), pdf.js (Apache 2.0, &copy; Mozilla Foundation), ' +
+    'georaster &amp; geotiff.js (Apache 2.0 / MIT), serta proj4js (MIT). ' +
     'Teks lisensi lengkap disertakan dalam paket pemasangan pada berkas ' +
     '<code>LISENSI-PIHAK-KETIGA.txt</code>.</p>' +
 
@@ -2676,6 +2682,154 @@ function bacaPdfPeta(berkas) {
     });
   });
 }
+
+/* ============================================================
+   LAPISAN GEOTIFF / TIFF
+
+   Dibaca langsung di perangkat memakai georaster + georaster-layer-for-leaflet.
+   Berkas disimpan di IndexedDB (bukan localStorage) karena ukurannya jauh melebihi
+   kuota ~5 MB localStorage.
+
+   BATAS YANG PERLU DISADARI: seluruh berkas dibaca ke memori peramban. Citra drone
+   mentah berukuran ratusan MB akan membuat HP kehabisan memori. Untuk citra besar,
+   jalur yang benar adalah mengubahnya dulu jadi MBTiles atau PMTiles di QGIS —
+   keduanya sudah didukung aplikasi ini dan hanya memuat potongan yang terlihat.
+   ============================================================ */
+var TIF_SUMBER = [
+  ['lib/georaster.min.js', 'https://unpkg.com/georaster@1.6.0/dist/georaster.browser.bundle.min.js'],
+  ['lib/georaster-layer.min.js', 'https://unpkg.com/georaster-layer-for-leaflet@3.10.0/dist/georaster-layer-for-leaflet.min.js'],
+  ['lib/proj4.min.js', 'https://unpkg.com/proj4@2.12.1/dist/proj4.js']
+];
+var BATAS_TIF_AMAN = 60 * 1024 * 1024;    // di atas ini pengguna diperingatkan dulu
+var _tifSiap = null;
+
+function pastikanGeotiff() {
+  if (window.parseGeoraster && window.GeoRasterLayer) return Promise.resolve();
+  if (_tifSiap) return _tifSiap;
+
+  // Dimuat berurutan: georaster-layer mengandalkan proj4 bila sudah ada saat dijalankan.
+  _tifSiap = TIF_SUMBER.reduce(function (rantai, pasangan) {
+    return rantai.then(function () {
+      return muatSkrip(pasangan[0]).catch(function () { return muatSkrip(pasangan[1]); });
+    });
+  }, Promise.resolve())
+  .then(function () {
+    if (!window.parseGeoraster || !window.GeoRasterLayer) throw new Error('pustaka tidak lengkap');
+    daftarkanZonaUtm();
+  })
+  .catch(function () {
+    _tifSiap = null;
+    throw new Error('Gagal memuat pustaka GeoTIFF. Pastikan berkas lib/georaster*.js dan ' +
+      'lib/proj4.min.js ikut diunggah, atau perangkat terhubung internet saat pertama memakainya.');
+  });
+  return _tifSiap;
+}
+
+/**
+ * Daftarkan zona UTM yang lazim dipakai di Indonesia (47N–53S) ke proj4, supaya GeoTIFF
+ * berproyeksi UTM — keluaran paling umum dari QGIS dan pengolah foto drone — bisa
+ * ditempatkan tanpa pengguna perlu tahu apa pun soal sistem koordinat.
+ */
+function daftarkanZonaUtm() {
+  if (!window.proj4) return;
+  for (var z = 46; z <= 54; z++) {
+    ['N', 'S'].forEach(function (sisi) {
+      var epsg = (sisi === 'N' ? 32600 : 32700) + z;
+      if (!window.proj4.defs('EPSG:' + epsg)) {
+        window.proj4.defs('EPSG:' + epsg,
+          '+proj=utm +zone=' + z + (sisi === 'S' ? ' +south' : '') +
+          ' +datum=WGS84 +units=m +no_defs');
+      }
+    });
+  }
+}
+
+function pasangSatuTif(item) {
+  if (S.lapisTif[item.id]) { S.peta.removeLayer(S.lapisTif[item.id]); delete S.lapisTif[item.id]; }
+  if (!item.tampil || !S.peta) return Promise.resolve();
+
+  return pastikanGeotiff()
+    .then(function () { return idbBaca('tif_' + item.id); })
+    .then(function (buf) {
+      if (!buf) throw new Error('Berkas GeoTIFF tidak ditemukan di penyimpanan perangkat.');
+      return window.parseGeoraster(buf);
+    })
+    .then(function (georaster) {
+      var lapis = new window.GeoRasterLayer({
+        georaster: georaster,
+        opacity: item.buram === undefined ? 0.8 : item.buram,
+        resolution: 256,
+        // Nilai kosong (nodata) dibuat transparan, kalau tidak tepi citra jadi kotak hitam.
+        pixelValuesToColorFn: null
+      });
+      lapis.addTo(S.peta);
+      S.lapisTif[item.id] = lapis;
+      if (S.lapisPoligon) S.lapisPoligon.bringToFront();
+      if (S.lapisObjek) S.lapisObjek.bringToFront();
+    })
+    .catch(function (e) { toast('Lapisan "' + item.nama + '": ' + e.message, 'galat'); });
+}
+
+function pasangUlangTif() { (S.tifPeta || []).forEach(pasangSatuTif); }
+
+function simpanDaftarTif() {
+  try {
+    // Hanya metadatanya di localStorage; isi berkasnya di IndexedDB.
+    localStorage.setItem('gu_tif_peta', JSON.stringify(S.tifPeta));
+  } catch (e) { /* abaikan */ }
+}
+
+$('inputTifPeta').onchange = function (e) {
+  var berkas = e.target.files[0];
+  if (!berkas) return;
+
+  if (berkas.size > BATAS_TIF_AMAN) {
+    var mb = Math.round(berkas.size / 1048576);
+    if (!confirm('Berkas ini ' + mb + ' MB. Seluruh isinya dibaca ke memori perangkat, ' +
+        'dan pada HP berkas sebesar ini sering membuat aplikasi berhenti.\n\n' +
+        'Untuk citra besar, ubah dulu jadi MBTiles atau PMTiles di QGIS — jauh lebih ringan ' +
+        'dan sudah didukung aplikasi ini.\n\nTetap lanjutkan?')) {
+      $('inputTifPeta').value = '';
+      return;
+    }
+  }
+
+  var nama = berkas.name.replace(/\.(tif|tiff|geotiff)$/i, '');
+  var id = 'tif_' + Date.now().toString(36);
+  tunggu(true, 'Membaca GeoTIFF...');
+
+  pastikanGeotiff()
+    .then(function () { return berkas.arrayBuffer(); })
+    .then(function (ab) {
+      return window.parseGeoraster(ab).then(function (g) {
+        return idbTulis('tif_' + id, ab).then(function () { return g; });
+      });
+    })
+    .then(function (g) {
+      var item = {
+        id: id, nama: nama, buram: 0.8, tampil: true,
+        ukuran: berkas.size,
+        info: (g.width || 0) + '\u00D7' + (g.height || 0) + ' px, ' + (g.numberOfRasters || 1) + ' band',
+        batas: [[g.ymin, g.xmin], [g.ymax, g.xmax]],
+        proyeksi: g.projection || 4326
+      };
+      S.tifPeta.push(item);
+      simpanDaftarTif();
+      return pasangSatuTif(item).then(function () {
+        try {
+          var l = S.lapisTif[item.id];
+          if (l && l.getBounds) S.peta.fitBounds(l.getBounds().pad(0.1));
+        } catch (err) { /* abaikan */ }
+        toast('GeoTIFF terpasang (EPSG:' + item.proyeksi + ').', 'sukses');
+        gambarPilihPeta('lapisan');
+      });
+    })
+    .catch(function (err) {
+      toast('Gagal membaca GeoTIFF: ' + err.message, 'galat');
+      idbHapus('tif_' + id);
+    })
+    .then(function () { tunggu(false); $('inputTifPeta').value = ''; });
+};
 
 /* ---------- PDF sebagai lapisan gambar di peta ---------- */
 
@@ -3025,9 +3179,32 @@ function isiLapisan() {
     }).join('');
   }
 
+  // --- lapisan GeoTIFF ---
+  if ((S.tifPeta || []).length) {
+    isi += '<div class="pisah-lapisan">Citra GeoTIFF</div>' + S.tifPeta.map(function (t) {
+      return '<div class="ov-baris" data-tif="' + esc(t.id) + '">' +
+        '<div class="ov-atas">' +
+          '<span class="ov-warna" style="background:#5C940D">&#127756;</span>' +
+          '<div class="ov-nama"><b>' + esc(t.nama) + '</b><small>' + esc(t.info || 'GeoTIFF') +
+          ' &middot; EPSG:' + esc(String(t.proyeksi || '-')) +
+          (t.ukuran ? ' &middot; ' + Math.round(t.ukuran / 1048576) + ' MB' : '') + '</small></div>' +
+          '<button class="btn btn-kecil" data-tif-zoom="' + esc(t.id) + '">Zoom</button>' +
+          '<button class="btn btn-kecil ' + (t.tampil ? 'btn-utama' : '') + '" data-tif-toggle="' + esc(t.id) + '">' +
+          (t.tampil ? 'Tampil' : 'Sembunyi') + '</button>' +
+          '<button class="ikon-btn" data-tif-hapus="' + esc(t.id) + '">&#10005;</button>' +
+        '</div>' +
+        '<div class="ov-label">' +
+          '<label class="ov-cek" style="flex:1">Transparansi' +
+          '<input type="range" min="10" max="100" value="' + Math.round((t.buram === undefined ? 0.8 : t.buram) * 100) +
+          '" data-tif-buram="' + esc(t.id) + '" style="flex:1;margin-left:8px"></label>' +
+        '</div></div>';
+    }).join('');
+  }
+
   isi += '<div style="margin-top:14px;border-top:1px solid var(--garis);padding-top:12px">' +
     '<button class="btn btn-utama btn-lebar" id="ovTambah" style="margin-top:0">+ Tambah lapisan (SHP / KML)</button>' +
     '<button class="btn btn-lebar" id="pdfTambah">+ Tambah peta PDF (GeoPDF)</button>' +
+    '<button class="btn btn-lebar" id="tifTambah">+ Tambah citra GeoTIFF (.tif)</button>' +
     '<p class="jejak" style="text-align:left;line-height:1.5">Format didukung: <b>.zip</b> berisi shapefile ' +
     '(shp+shx+dbf, WGS84/EPSG:4326), <b>.kml</b>, dan <b>.geojson</b>. Lapisan menumpuk di atas peta ' +
     'dan tersimpan di perangkat ini. Untuk shapefile dengan proyeksi lain (mis. UTM), ekspor dulu ke ' +
@@ -3038,6 +3215,48 @@ function isiLapisan() {
 function pasangAksiLapisan() {
   if ($('ovTambah')) $('ovTambah').onclick = function () { $('inputOverlay').click(); };
   if ($('pdfTambah')) $('pdfTambah').onclick = function () { $('inputPdfPeta').click(); };
+  if ($('tifTambah')) $('tifTambah').onclick = function () { $('inputTifPeta').click(); };
+
+  var cariTif = function (id) { return S.tifPeta.filter(function (x) { return x.id === id; })[0]; };
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-tif-toggle]'), function (b) {
+    b.onclick = function () {
+      var t = cariTif(b.dataset.tifToggle);
+      t.tampil = !t.tampil; simpanDaftarTif();
+      if (t.tampil) { tunggu(true, 'Memuat citra...'); pasangSatuTif(t).then(function () { tunggu(false); }); }
+      else if (S.lapisTif[t.id]) { S.peta.removeLayer(S.lapisTif[t.id]); delete S.lapisTif[t.id]; }
+      gambarPilihPeta('lapisan');
+    };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-tif-zoom]'), function (b) {
+    b.onclick = function () {
+      var t = cariTif(b.dataset.tifZoom);
+      tutupLembar();
+      try {
+        var l = S.lapisTif[t.id];
+        if (l && l.getBounds) S.peta.fitBounds(l.getBounds().pad(0.1));
+        else S.peta.fitBounds(L.latLngBounds(t.batas).pad(0.1));
+      } catch (e) {}
+    };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-tif-buram]'), function (r) {
+    r.oninput = function () {
+      var t = cariTif(r.dataset.tifBuram);
+      t.buram = Number(r.value) / 100;
+      if (S.lapisTif[t.id] && S.lapisTif[t.id].setOpacity) S.lapisTif[t.id].setOpacity(t.buram);
+    };
+    r.onchange = function () { simpanDaftarTif(); };
+  });
+  Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-tif-hapus]'), function (b) {
+    b.onclick = function () {
+      var t = cariTif(b.dataset.tifHapus);
+      if (!confirm('Hapus citra "' + t.nama + '" dari perangkat ini?')) return;
+      if (S.lapisTif[t.id]) { S.peta.removeLayer(S.lapisTif[t.id]); delete S.lapisTif[t.id]; }
+      S.tifPeta = S.tifPeta.filter(function (x) { return x.id !== t.id; });
+      simpanDaftarTif();
+      idbHapus('tif_' + t.id);
+      gambarPilihPeta('lapisan');
+    };
+  });
 
   var cariPdf = function (id) {
     return S.pdfPeta.filter(function (x) { return x.id === id; })[0];
@@ -3532,8 +3751,9 @@ function gambarPilihPeta(tab) {
   var isi = '<div class="tab-ruang" id="tabPeta">' +
     '<button data-t="dasar" class="' + (tabPeta === 'dasar' ? 'pilih' : '') + '">Peta Dasar</button>' +
     '<button data-t="lapisan" class="' + (tabPeta === 'lapisan' ? 'pilih' : '') + '">Lapisan' +
-      ((S.overlay.length + (S.pdfPeta || []).length)
-        ? ' (' + (S.overlay.length + (S.pdfPeta || []).length) + ')' : '') + '</button></div>';
+      ((S.overlay.length + (S.pdfPeta || []).length + (S.tifPeta || []).length)
+        ? ' (' + (S.overlay.length + (S.pdfPeta || []).length + (S.tifPeta || []).length) + ')' : '') +
+      '</button></div>';
 
   isi += (tabPeta === 'dasar') ? isiPetaDasar() : isiLapisan();
   bukaLembar('Peta & Lapisan', isi);
