@@ -1220,7 +1220,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 5.2.5 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 5.2.6 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -1427,7 +1427,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '5.2.5';
+    window.APP_VERSION = '5.2.6';
   </script>
 <script>
 /* ============================================================
@@ -3948,6 +3948,13 @@ function ujiServerPmtiles(url) {
                   'Gunakan alamat https://.';
     return Promise.resolve(hasil);
   }
+  if (/\.r2\.cloudflarestorage\.com/i.test(url)) {
+    hasil.sebab = 'Ini alamat "S3 API" Cloudflare R2 (…r2.cloudflarestorage.com) yang hanya bisa dibuka dengan ' +
+                  'kunci akses, jadi browser selalu ditolak. Pakai "Public URL": di bucket R2 buka Settings → ' +
+                  'Public access → aktifkan R2.dev subdomain (atau hubungkan domain sendiri), lalu salin alamat ' +
+                  'https://pub-….r2.dev/nama-berkas.pmtiles.';
+    return Promise.resolve(hasil);
+  }
   if (/drive\.google\.com|docs\.google\.com|dropbox\.com\/s|onedrive|1drv\.ms|sharepoint/i.test(url)) {
     hasil.sebab = 'Tautan Google Drive / Dropbox / OneDrive tidak bisa dipakai untuk PMTiles: layanan ini ' +
                   'tidak melayani unduhan sebagian dan sering membalas halaman konfirmasi. ' +
@@ -3983,10 +3990,26 @@ function ujiServerPmtiles(url) {
       return hasil;
     })
     .catch(function () {
-      hasil.sebab = 'Server citra menolak permintaan dari alamat aplikasi ini (' + location.origin + ') — ' +
-        'pengaturan CORS di hosting belum mengizinkannya — atau server tidak terjangkau. ' +
-        'Di pengaturan CORS hosting, izinkan origin tersebut (atau *), metode GET/HEAD, dan header "Range".';
-      return hasil;
+      // Bedakan "server terjangkau tapi CORS menolak" dari "server tidak terjangkau sama sekali":
+      // permintaan no-cors berhasil (jawaban buram) selama servernya bisa dihubungi.
+      return fetch(url, { mode: 'no-cors', cache: 'no-store' })
+        .then(function () {
+          hasil.sebab = 'Server bisa dihubungi, tetapi jawabannya TIDAK membawa izin CORS untuk ' + location.origin +
+            '. Periksa: (1) aturan CORS benar-benar tersimpan di bucket/hosting yang sama dengan URL ini; ' +
+            '(2) untuk Cloudflare R2: akses publik (R2.dev subdomain atau domain sendiri) sudah diaktifkan — ' +
+            'jika belum, R2 membalas galat tanpa header CORS; (3) bila memakai domain sendiri lewat Cloudflare, ' +
+            'bersihkan cache (Caching → Purge Everything) karena jawaban lama tanpa CORS bisa masih tersimpan; ' +
+            '(4) tunggu ±1 menit setelah mengubah CORS.';
+          hasil.rinci = 'Server terjangkau; diblokir CORS.';
+          return hasil;
+        })
+        .catch(function () {
+          hasil.sebab = 'Server citra TIDAK bisa dihubungi dari perangkat ini: nama domain salah/tidak ada, ' +
+            'alamat jaringan lokal (192.168.x.x) yang hanya ada di jaringan lain, atau diblokir jaringan/antivirus. ' +
+            'Coba buka URL-nya langsung di browser perangkat ini.';
+          hasil.rinci = 'Server tidak terjangkau.';
+          return hasil;
+        });
     });
 }
 
