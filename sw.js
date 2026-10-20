@@ -5,7 +5,7 @@
  * - Ubin peta online di-cache saat lewat (stale-while-revalidate) sebagai pelengkap MBTiles.
  * - Panggilan API (POST) tidak pernah di-cache; itu urusan antrean offline di dalam aplikasi.
  */
-const VERSI = 'geoukur-v5.2.4';
+const VERSI = 'geoukur-v5.2.5';
 const CANGKANG = VERSI + '-cangkang';
 const UBIN = VERSI + '-ubin';
 const MAKS_UBIN = 600;
@@ -58,6 +58,20 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return; // API lewat POST — biarkan lewat apa adanya
 
+  // Permintaan sebagian (Range) — PMTiles, video, berkas besar — JANGAN disentuh.
+  // Cache API tidak menyimpan jawaban 206, dan caches.match() mengabaikan header Range,
+  // jadi campur tangan service worker hanya bisa merusak jawaban.
+  if (req.headers.has('range')) return;
+
+  // Berkas dari domain lain (PMTiles di R2/S3, ubin XYZ kustom, layanan API) dibiarkan
+  // ke jaringan langsung, kecuali ubin peta bawaan & pustaka yang memang di-precache.
+  // Dulu SEMUA permintaan masuk cabang paling bawah, dan saat gagal (mis. CORS) dijawab
+  // dengan index.html. Pustaka PMTiles lalu menerima halaman HTML 300-an KB dan melapor
+  // "Check that your storage backend supports HTTP Byte Serving" — pesan yang menyesatkan,
+  // karena penyebab sebenarnya adalah CORS atau jaringan.
+  const asing = new URL(req.url).origin !== self.location.origin;
+  if (asing && !ubinPeta(req.url) && !ASET.includes(req.url)) return;
+
   if (ubinPeta(req.url)) {
     e.respondWith(
       caches.open(UBIN).then((c) =>
@@ -92,7 +106,7 @@ self.addEventListener('fetch', (e) => {
   }
 
   // Aset lain (ikon, Leaflet, sql.js): cache dulu — isinya memang tidak berubah-ubah.
-  e.respondWith(
-    caches.match(req).then((hit) => hit || fetch(req).catch(() => caches.match('./index.html')))
-  );
+  // Halaman cadangan HANYA untuk navigasi (sudah ditangani di atas). Aset yang gagal
+  // dibiarkan gagal apa adanya supaya pesan galatnya jujur.
+  e.respondWith(caches.match(req).then((hit) => hit || fetch(req)));
 });

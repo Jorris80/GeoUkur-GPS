@@ -1220,7 +1220,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 5.2.4 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 5.2.5 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -1427,7 +1427,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '5.2.4';
+    window.APP_VERSION = '5.2.5';
   </script>
 <script>
 /* ============================================================
@@ -2392,19 +2392,15 @@ function gantiBasemap(idx) {
     // Arsip PMTiles dimuat asinkron; tampilkan grid dulu supaya peta tidak kosong.
     lapisBasemap = new LapisGrid({ maxZoom: 22, attribution: b.kredit }).addTo(S.peta);
     var idxMinta = S.basemapIdx;
-    pastikanPmtiles()
-      .then(function () {
-        // Header arsip SELALU dibaca ulang: zoom min/maks yang tersimpan di daftar bisa
-        // salah (mis. diisi tangan 19 padahal citra drone hanya sampai 18).
-        var arsip = new window.pmtiles.PMTiles(b.url);
-        return arsip.getHeader().then(function (h) { return { arsip: arsip, h: h }; });
-      })
+    // Header arsip SELALU dibaca ulang: zoom min/maks yang tersimpan di daftar bisa
+    // salah (mis. diisi tangan 19 padahal citra drone hanya sampai 18).
+    bukaArsipPmtiles(b.url)
       .then(function (r) {
         if (S.basemapIdx !== idxMinta) return;        // pengguna sudah ganti peta lain
         var lp = buatLapisPmtiles(b.url, { arsip: r.arsip, header: r.h, kredit: b.kredit || b.nama });
         if (lapisBasemap) S.peta.removeLayer(lapisBasemap);
         lapisBasemap = lp.addTo(S.peta);
-        S.pmAktif = { nama: b.nama, url: b.url, h: r.h, gagal: 0 };
+        S.pmAktif = { nama: b.nama, url: b.url, h: r.h, gagal: 0, mode: r.mode };
         if (S.lapisPoligon) S.lapisPoligon.bringToFront();
         pasangUlangOverlay();
         cekCakupanPmtiles();
@@ -3357,6 +3353,10 @@ function identifyFitur(item, f) {
  * Menampilkan: pustaka peta termuat atau tidak, peta dasar aktif, status GPS, dan
  * apakah berkas antarmuka sudah versi terbaru.
  */
+function pmDaftar() {
+  return daftarBasemap().filter(function (b) { return b.jenis === 'pmtiles'; });
+}
+
 function diagnostikPeta() {
   var semua = daftarBasemap();
   var aktif = (S.basemapIdx === 'offline')
@@ -3405,8 +3405,30 @@ function diagnostikPeta() {
     '<p class="jejak" style="text-align:left;line-height:1.55">Peta tampak polos berwarna krem dengan garis kotak ' +
     'dan tulisan koordinat? Itu <b>Peta Grid</b> — normal, artinya citra satelit belum diaktifkan. ' +
     'Isi penyedia &amp; kunci API di Pengaturan &rarr; Pengaturan aplikasi, atau tambahkan peta XYZ Anda sendiri.</p>' +
+    (pmDaftar().length
+      ? '<div class="grup" style="margin-top:6px"><label class="lbl">Uji server citra PMTiles</label>' +
+        '<select id="dgPm" class="inp">' + pmDaftar().map(function (b) {
+          return '<option value="' + esc(b.url) + '">' + esc(b.nama) + '</option>'; }).join('') + '</select>' +
+        '<button class="btn btn-lebar" id="dgUjiPm" style="margin-top:8px">Uji server citra</button>' +
+        '<div id="dgHasilPm" class="dok-kecil" style="margin-top:8px"></div></div>'
+      : '') +
     '<div class="aksi-baris"><button class="btn" id="dgTutup">Tutup</button>' +
     '<button class="btn btn-utama" id="dgUlang">Muat ulang peta</button></div>');
+
+  if ($('dgUjiPm')) $('dgUjiPm').onclick = function () {
+    var url = $('dgPm').value;
+    $('dgHasilPm').textContent = 'Menguji ' + url + ' ...';
+    ujiServerPmtiles(url).then(function (u) {
+      var baik = u.ok && u.dukungRange;
+      $('dgHasilPm').innerHTML =
+        '<b style="color:' + (baik ? '#0A6B4B' : 'var(--merah)') + '">' +
+          (baik ? 'Server sehat: mendukung unduhan sebagian dan mengizinkan aplikasi ini.' :
+           u.ok ? 'Bisa dibuka, tapi kurang ideal.' : 'Tidak bisa dibuka.') + '</b>' +
+        (u.sebab ? '<br>' + esc(u.sebab) : '') +
+        (u.rinci ? '<br><small style="color:var(--tinta-3)">' + esc(u.rinci) + '</small>' : '') +
+        '<br><small style="color:var(--tinta-3)">Alamat aplikasi: ' + esc(location.origin) + '</small>';
+    });
+  };
 
   $('dgTutup').onclick = tutupLembar;
   $('dgUlang').onclick = function () {
@@ -3912,6 +3934,119 @@ function buatLapisPmtiles(url, opsi) {
   return lapis;
 }
 
+/**
+ * Uji langsung server tempat berkas .pmtiles disimpan, TANPA lewat pustaka pmtiles,
+ * supaya penyebab kegagalan bisa disebut dengan tepat. Pesan bawaan pustaka
+ * ("...supports HTTP Byte Serving") muncul untuk banyak sebab berbeda.
+ * Mengembalikan { ok, sebab, rinci, dukungRange, ukuran }.
+ */
+function ujiServerPmtiles(url) {
+  var hasil = { ok: false, sebab: '', rinci: '', dukungRange: false, ukuran: 0 };
+
+  if (/^http:/i.test(url) && location.protocol === 'https:') {
+    hasil.sebab = 'URL memakai http://, sedangkan aplikasi dibuka lewat https://. Browser memblokirnya. ' +
+                  'Gunakan alamat https://.';
+    return Promise.resolve(hasil);
+  }
+  if (/drive\.google\.com|docs\.google\.com|dropbox\.com\/s|onedrive|1drv\.ms|sharepoint/i.test(url)) {
+    hasil.sebab = 'Tautan Google Drive / Dropbox / OneDrive tidak bisa dipakai untuk PMTiles: layanan ini ' +
+                  'tidak melayani unduhan sebagian dan sering membalas halaman konfirmasi. ' +
+                  'Simpan berkas di GitHub Pages, Cloudflare R2, atau S3.';
+    return Promise.resolve(hasil);
+  }
+
+  return fetch(url, { headers: { Range: 'bytes=0-16383' }, cache: 'no-store' })
+    .then(function (r) {
+      var jenis = (r.headers.get('Content-Type') || '').toLowerCase();
+      var panjang = +r.headers.get('Content-Length') || 0;
+      var rentang = r.headers.get('Content-Range') || '';
+      hasil.rinci = 'HTTP ' + r.status + ', Content-Type ' + (jenis || '-') + ', Content-Length ' +
+                    (panjang || '-') + (rentang ? ', Content-Range ' + rentang : '');
+      if (/\/(\d+)$/.test(rentang)) hasil.ukuran = +RegExp.$1;
+      else if (r.status === 200) hasil.ukuran = panjang;
+
+      if (r.status === 404) { hasil.sebab = 'Berkas tidak ditemukan (404). Periksa ejaan URL, huruf besar/kecil, dan apakah berkas sudah benar-benar terunggah.'; return hasil; }
+      if (r.status === 401 || r.status === 403) { hasil.sebab = 'Akses ditolak (' + r.status + '). Berkas harus bisa dibaca publik.'; return hasil; }
+      if (r.status >= 300) { hasil.sebab = 'Server membalas kode ' + r.status + '.'; return hasil; }
+      if (/text\/html/.test(jenis)) {
+        hasil.sebab = 'Server membalas halaman web (HTML), bukan berkas PMTiles — biasanya URL salah, ' +
+                      'halaman login, atau halaman konfirmasi unduhan.';
+        return hasil;
+      }
+      hasil.dukungRange = (r.status === 206);
+      hasil.ok = true;
+      if (!hasil.dukungRange) {
+        hasil.sebab = 'Hosting tidak mendukung unduhan sebagian (HTTP Range): seluruh berkas (' +
+          (hasil.ukuran ? Math.round(hasil.ukuran / 1048576) + ' MB' : 'ukuran tak diketahui') +
+          ') dikirim sekaligus.';
+      }
+      return hasil;
+    })
+    .catch(function () {
+      hasil.sebab = 'Server citra menolak permintaan dari alamat aplikasi ini (' + location.origin + ') — ' +
+        'pengaturan CORS di hosting belum mengizinkannya — atau server tidak terjangkau. ' +
+        'Di pengaturan CORS hosting, izinkan origin tersebut (atau *), metode GET/HEAD, dan header "Range".';
+      return hasil;
+    });
+}
+
+/** Batas unduh utuh untuk hosting tanpa dukungan Range. Di atas ini terlalu berat untuk HP/laptop. */
+var BATAS_PM_UTUH = 150 * 1048576;
+
+/**
+ * Buka arsip PMTiles. Jalur normal: unduhan sebagian (Range). Bila hosting tidak mendukung
+ * Range tetapi berkasnya cukup kecil, unduh SEKALI secara utuh, simpan di IndexedDB, lalu
+ * baca dari perangkat — sesudah itu citra bahkan bisa dibuka tanpa sinyal.
+ */
+function bukaArsipPmtiles(url) {
+  var kunciIdb = 'pmu_' + url;
+  return pastikanPmtiles()
+    .then(function () { return idbBaca(kunciIdb).catch(function () { return null; }); })
+    .then(function (simpanan) {
+      if (simpanan) return dariBlob(simpanan, 'utuh-tersimpan');
+      var arsip = new window.pmtiles.PMTiles(url);
+      return arsip.getHeader()
+        .then(function (h) { return { arsip: arsip, h: h, mode: 'range' }; })
+        .catch(function (galat) {
+          return ujiServerPmtiles(url).then(function (u) {
+            if (!u.ok) throw new Error(u.sebab || galat.message);
+            if (u.dukungRange) throw galat;                       // server sehat; galat lain
+            if (u.ukuran && u.ukuran > BATAS_PM_UTUH) {
+              throw new Error(u.sebab + ' Berkas terlalu besar untuk diunduh utuh. Pindahkan ke GitHub Pages, ' +
+                'Cloudflare R2, atau S3, atau muat sebagai MBTiles offline.');
+            }
+            return unduhUtuh(url).then(function (blob) {
+              return idbTulis(kunciIdb, blob).catch(function () {}).then(function () {
+                toast('Hosting tidak mendukung unduhan sebagian, jadi citra diunduh utuh sekali dan ' +
+                      'disimpan di perangkat ini.');
+                return dariBlob(blob, 'utuh');
+              });
+            });
+          });
+        });
+    });
+
+  function dariBlob(blob, mode) {
+    var berkas = new File([blob], 'arsip.pmtiles');
+    var arsip = new window.pmtiles.PMTiles(new window.pmtiles.FileSource(berkas));
+    return arsip.getHeader().then(function (h) { return { arsip: arsip, h: h, mode: mode }; });
+  }
+
+  function unduhUtuh(u) {
+    tunggu(true, 'Mengunduh citra PMTiles...');
+    return fetch(u, { cache: 'no-store' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('Gagal mengunduh citra (HTTP ' + r.status + ').');
+        return r.blob();
+      })
+      .then(function (b) { tunggu(false); return b; },
+            function (e) { tunggu(false); throw e; });
+  }
+}
+
+/** Hapus salinan utuh PMTiles (dipakai saat peta kustom dihapus). */
+function hapusSalinanPmtiles(url) { return idbHapus('pmu_' + url).catch(function () {}); }
+
 /** Terjemahkan galat teknis pmtiles/fetch menjadi penyebab yang bisa ditindaklanjuti. */
 function jelaskanGalatPmtiles(e, url) {
   var m = String((e && e.message) || e || '');
@@ -3923,8 +4058,8 @@ function jelaskanGalatPmtiles(e, url) {
       'Izinkan origin ini beserta header "Range" di pengaturan CORS hosting, lalu muat ulang.';
   }
   if (/Byte Serving|content-length|416|206/i.test(m)) {
-    return 'hosting tidak mendukung "HTTP Range" (unduhan sebagian). Google Drive, Dropbox, dan tautan ' +
-      'berbagi biasa tidak bisa dipakai — gunakan GitHub Pages, Cloudflare R2, atau S3.';
+    return 'server tidak mengirim potongan berkas yang diminta. Buka Pilih Peta → Diagnostik peta → ' +
+      '"Uji server citra" untuk melihat penyebab pastinya (CORS, URL salah, atau hosting tanpa Range).';
   }
   if (/etag|changed|mismatch/i.test(m)) {
     return 'berkas di server baru saja diganti. Muat ulang halaman (Ctrl+Shift+R).';
@@ -3958,9 +4093,8 @@ function zoomKeCitra() {
  * Mengembalikan metadata (zoom min/maks, batas wilayah) untuk mengisi form otomatis.
  */
 function periksaPmtiles(url) {
-  return pastikanPmtiles().then(function () {
-    var arsip = new window.pmtiles.PMTiles(url);
-    return arsip.getHeader().then(function (h) {
+  return bukaArsipPmtiles(url).then(function (r) {
+    return (function (h) {
       // 1 = mvt (vektor), 2 = png, 3 = jpeg, 4 = webp, 5 = avif
       var jenis = h.tileType;
       if (jenis === 1) {
@@ -3971,9 +4105,10 @@ function periksaPmtiles(url) {
         min: h.minZoom, maks: h.maxZoom,
         lat: (h.minLat + h.maxLat) / 2, lng: (h.minLon + h.maxLon) / 2,
         batas: [[h.minLat, h.minLon], [h.maxLat, h.maxLon]],
-        jenis: ({ 2: 'PNG', 3: 'JPEG', 4: 'WebP', 5: 'AVIF' })[jenis] || 'raster'
+        jenis: ({ 2: 'PNG', 3: 'JPEG', 4: 'WebP', 5: 'AVIF' })[jenis] || 'raster',
+        mode: r.mode
       };
-    });
+    })(r.h);
   });
 }
 
@@ -4042,10 +4177,16 @@ function formTambahBasemap() {
         S._pmMeta = { url: url, min: m.min, maks: m.maks };
         $('bmMaks').value = m.maks;
         $('bmContoh').innerHTML = '<b style="color:#0A6B4B">Arsip terbaca.</b> Jenis ubin ' + esc(m.jenis) +
-          ', zoom ' + m.min + '–' + m.maks + '. Pusat: ' + m.lat.toFixed(5) + ', ' + m.lng.toFixed(5) + '.';
+          ', zoom ' + m.min + '–' + m.maks + '. Pusat: ' + m.lat.toFixed(5) + ', ' + m.lng.toFixed(5) + '.' +
+          (m.mode === 'range' ? ' Hosting mendukung unduhan sebagian &mdash; ideal.'
+                              : ' Hosting <b>tidak</b> mendukung unduhan sebagian; citra diunduh utuh &amp; disimpan di perangkat.');
         toast('Arsip PMTiles valid.', 'sukses');
       })
-      .catch(function (e) { toast(e.message, 'galat'); })
+      .catch(function (e) {
+        $('bmContoh').innerHTML = '<b style="color:var(--merah)">Arsip tidak bisa dibuka.</b> ' +
+          esc(jelaskanGalatPmtiles(e, url));
+        toast('Arsip PMTiles tidak bisa dibuka — lihat keterangan di form.', 'galat');
+      })
       .then(function () { tunggu(false); });
   };
 
@@ -4730,7 +4871,7 @@ function gambarPilihPeta(tab) {
 function isiPetaDasar() {
   var semua = daftarBasemap();
   var isi = semua.map(function (b, i) {
-    var bawaan = i < BASEMAP.length;
+    var bawaan = i < BASEMAP.length + basemapPenyedia().length;   // bawaan & penyedia tak bisa dihapus
     return '<button class="pilih-peta' + (S.basemapIdx === i ? ' aktif' : '') + '" data-i="' + i + '">' +
       '<span class="em">' + (b.jenis === 'pmtiles' ? '&#128230;'
         : i === 0 ? '&#128506;' : i === 1 ? '&#128739;' : bawaan ? '&#9968;' : '&#127760;') + '</span>' +
@@ -4786,8 +4927,11 @@ function pasangAksiPetaDasar() {
   Array.prototype.forEach.call($('lembarIsi').querySelectorAll('[data-hapus-bm]'), function (b) {
     b.onclick = function (e) {
       e.stopPropagation();
-      var idx = parseInt(b.dataset.hapusBm, 10) - BASEMAP.length;
-      if (!confirm('Hapus peta "' + S.basemapKustom[idx].nama + '"?')) return;
+      // Peta kustom berada SESUDAH peta bawaan dan peta penyedia (MapTiler dll.).
+      var idx = parseInt(b.dataset.hapusBm, 10) - BASEMAP.length - basemapPenyedia().length;
+      var item = S.basemapKustom[idx];
+      if (!item || !confirm('Hapus peta "' + item.nama + '"?')) return;
+      if (item.jenis === 'pmtiles') hapusSalinanPmtiles(item.url);
       S.basemapKustom.splice(idx, 1);
       simpanLokal('gu_basemap_kustom', JSON.stringify(S.basemapKustom));
       if (S.basemapIdx >= daftarBasemap().length) gantiBasemap(0);
