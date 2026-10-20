@@ -553,7 +553,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 5.2.2 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 5.2.3 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -753,7 +753,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '5.2.2';
+    window.APP_VERSION = '5.2.3';
   </script>
 <script>
 /* ============================================================
@@ -1710,6 +1710,7 @@ function gantiBasemap(idx) {
   S.basemapIdx = ((idx % semua.length) + semua.length) % semua.length;
   var b = semua[S.basemapIdx];
   if (lapisBasemap) S.peta.removeLayer(lapisBasemap);
+  S.pmAktif = null;
 
   if (b.jenis === 'grid') {
     lapisBasemap = new LapisGrid({ maxZoom: 22, attribution: b.kredit }).addTo(S.peta);
@@ -1719,14 +1720,22 @@ function gantiBasemap(idx) {
     var idxMinta = S.basemapIdx;
     pastikanPmtiles()
       .then(function () {
+        // Header arsip SELALU dibaca ulang: zoom min/maks yang tersimpan di daftar bisa
+        // salah (mis. diisi tangan 19 padahal citra drone hanya sampai 18).
+        var arsip = new window.pmtiles.PMTiles(b.url);
+        return arsip.getHeader().then(function (h) { return { arsip: arsip, h: h }; });
+      })
+      .then(function (r) {
         if (S.basemapIdx !== idxMinta) return;        // pengguna sudah ganti peta lain
-        var lp = buatLapisPmtiles(b.url, { maks: b.maks, min: b.min, kredit: b.kredit });
+        var lp = buatLapisPmtiles(b.url, { arsip: r.arsip, header: r.h, kredit: b.kredit || b.nama });
         if (lapisBasemap) S.peta.removeLayer(lapisBasemap);
         lapisBasemap = lp.addTo(S.peta);
+        S.pmAktif = { nama: b.nama, url: b.url, h: r.h, gagal: 0 };
         if (S.lapisPoligon) S.lapisPoligon.bringToFront();
         pasangUlangOverlay();
+        cekCakupanPmtiles();
       })
-      .catch(function (e) { toast(e.message, 'galat'); });
+      .catch(function (e) { toast('PMTiles "' + b.nama + '": ' + jelaskanGalatPmtiles(e, b.url), 'galat'); });
   } else if (b.jenis === 'arcgis') {
     // ArcGIS REST MapServer -> export image per ubin (256px)
     lapisBasemap = L.tileLayer(
@@ -2698,6 +2707,14 @@ function diagnostikPeta() {
       baris('Penyedia berkunci', basemapPenyedia().length ? (S.config.peta_penyedia + ' — aktif') : 'belum diisi') +
       baris('Peta kustom', S.basemapKustom.length + ' tersimpan') +
       baris('Lapisan overlay', S.overlay.length + ' tersimpan') +
+      (S.pmAktif ? baris('Citra PMTiles', 'zoom asli ' + S.pmAktif.h.minZoom + '–' + S.pmAktif.h.maxZoom +
+          ' (diperbesar otomatis di atasnya), zoom peta sekarang ' + S.peta.getZoom() +
+          (S.pmAktif.gagal ? ', ' + S.pmAktif.gagal + ' ubin GAGAL' : ''), S.pmAktif.gagal > 0) +
+        baris('Citra di tampilan', S.peta.getBounds().intersects(L.latLngBounds(
+          [S.pmAktif.h.minLat, S.pmAktif.h.minLon], [S.pmAktif.h.maxLat, S.pmAktif.h.maxLon]))
+          ? 'ya' : 'TIDAK — peta sedang di luar cakupan citra', !S.peta.getBounds().intersects(L.latLngBounds(
+          [S.pmAktif.h.minLat, S.pmAktif.h.minLon], [S.pmAktif.h.maxLat, S.pmAktif.h.maxLon]))) +
+        baris('Alamat aplikasi', location.origin) : '') +
       baris('Penyimpanan terpakai', kb(ukuranLokal()) + ' dari ~5 MB (localStorage)',
             ukuranLokal() > 4 * 1048576) +
       baris('GPS', pos ? ('aktif, akurasi ' + (pos.accuracy || 0).toFixed(0) + ' m') : 'belum ada posisi', !pos) +
@@ -3160,34 +3177,106 @@ function pastikanPmtiles() {
   return _pmtilesSiap;
 }
 
-/** Lapisan Leaflet yang mengambil ubin dari arsip .pmtiles. */
+/**
+ * Lapisan Leaflet yang mengambil ubin dari arsip .pmtiles.
+ *
+ * PENTING — zoom asli vs zoom peta. Arsip citra drone biasanya hanya sampai zoom 18/19.
+ * Dulu maxZoom lapisan = maxZoom arsip, sehingga begitu peta diperbesar melewatinya
+ * Leaflet MENGHAPUS seluruh ubin dan citra lenyap. Ini yang membuat citra tampak di HP
+ * tapi tidak di laptop: layar laptop lebih lebar, jadi "Zoom ke bidang" menaruh peta satu
+ * tingkat lebih dalam (mis. 19 di laptop, 18 di HP) — tepat di luar jangkauan arsip.
+ * Sekarang maxNativeZoom = zoom arsip, dan di atasnya ubin terakhir diperbesar (overzoom).
+ */
 function buatLapisPmtiles(url, opsi) {
   opsi = opsi || {};
-  var arsip = new window.pmtiles.PMTiles(url);
+  var arsip = opsi.arsip || new window.pmtiles.PMTiles(url);
+  var h = opsi.header || {};
+  var asliMaks = isFinite(h.maxZoom) ? h.maxZoom : (opsi.maks || 18);
+  var asliMin = isFinite(h.minZoom) ? h.minZoom : (opsi.min || 0);
+  var batas = (isFinite(h.minLat) && h.maxLat > h.minLat)
+    ? L.latLngBounds([h.minLat, h.minLon], [h.maxLat, h.maxLon]) : null;
 
   var Lapis = L.GridLayer.extend({
     createTile: function (coords, selesai) {
       var img = document.createElement('img');
+      var lapis = this;
       img.alt = '';
       arsip.getZxy(coords.z, coords.x, coords.y)
         .then(function (ubin) {
-          if (!ubin || !ubin.data) { selesai(null, img); return; }   // ubin kosong: wajar
-          var blob = new Blob([ubin.data]);
-          img.src = URL.createObjectURL(blob);
-          img.onload = function () { URL.revokeObjectURL(img.src); selesai(null, img); };
-          img.onerror = function () { selesai(null, img); };
+          if (!ubin || !ubin.data) { selesai(null, img); return; }   // di luar citra: wajar
+          var url = URL.createObjectURL(new Blob([ubin.data]));
+          img.onload = function () { URL.revokeObjectURL(url); selesai(null, img); };
+          img.onerror = function () { URL.revokeObjectURL(url); selesai(null, img); };
+          img.src = url;
         })
-        .catch(function (e) { selesai(null, img); });
+        .catch(function (e) {
+          // Jangan ditelan diam-diam: tanpa pesan, peta hanya tampak kosong tanpa petunjuk.
+          lapis.fire('pmgalat', { error: e });
+          selesai(null, img);
+        });
       return img;
     }
   });
 
-  return new Lapis({
-    maxZoom: opsi.maks || 20,
-    minZoom: opsi.min || 0,
+  var lapis = new Lapis({
+    minZoom: 0,
+    maxZoom: 22,
+    minNativeZoom: asliMin,
+    maxNativeZoom: asliMaks,
+    bounds: batas || undefined,          // jangan minta ubin di luar cakupan citra
     attribution: opsi.kredit || 'PMTiles',
     tileSize: 256
   });
+
+  var sudah = false;
+  lapis.on('pmgalat', function (ev) {
+    if (S.pmAktif) S.pmAktif.gagal++;
+    if (sudah) return;
+    sudah = true;
+    toast('Citra PMTiles gagal dimuat: ' + jelaskanGalatPmtiles(ev.error, url), 'galat');
+  });
+  return lapis;
+}
+
+/** Terjemahkan galat teknis pmtiles/fetch menjadi penyebab yang bisa ditindaklanjuti. */
+function jelaskanGalatPmtiles(e, url) {
+  var m = String((e && e.message) || e || '');
+  if (/^http:/i.test(url) && location.protocol === 'https:') {
+    return 'URL memakai http://, padahal aplikasi dibuka lewat https:// — browser memblokirnya. Pakai URL https://.';
+  }
+  if (/Failed to fetch|NetworkError|Load failed|CORS/i.test(m)) {
+    return 'server citra menolak permintaan dari alamat ' + location.origin + ' (CORS) atau tidak terjangkau. ' +
+      'Izinkan origin ini beserta header "Range" di pengaturan CORS hosting, lalu muat ulang.';
+  }
+  if (/Byte Serving|content-length|416|206/i.test(m)) {
+    return 'hosting tidak mendukung "HTTP Range" (unduhan sebagian). Google Drive, Dropbox, dan tautan ' +
+      'berbagi biasa tidak bisa dipakai — gunakan GitHub Pages, Cloudflare R2, atau S3.';
+  }
+  if (/etag|changed|mismatch/i.test(m)) {
+    return 'berkas di server baru saja diganti. Muat ulang halaman (Ctrl+Shift+R).';
+  }
+  if (/Wrong magic|not a pmtiles|Invalid/i.test(m)) {
+    return 'berkas bukan arsip PMTiles yang sah (mungkin terunggah tidak utuh).';
+  }
+  return m || 'sebab tidak diketahui';
+}
+
+/** Kalau tampilan peta tidak menyentuh cakupan citra, beri tahu dan tawarkan zoom ke sana. */
+function cekCakupanPmtiles() {
+  var p = S.pmAktif;
+  if (!p || !p.h || !S.peta || !isFinite(p.h.minLat)) return;
+  var cakupan = L.latLngBounds([p.h.minLat, p.h.minLon], [p.h.maxLat, p.h.maxLon]);
+  if (S.peta.getBounds().intersects(cakupan)) return;
+  toast('Citra "' + p.nama + '" berada di luar tampilan peta. Buka Pilih Peta → "Zoom ke citra".');
+}
+
+function zoomKeCitra() {
+  var p = S.pmAktif;
+  if (!p || !p.h || !isFinite(p.h.minLat)) { toast('Belum ada citra PMTiles yang aktif.', 'galat'); return; }
+  S.ikuti = false;
+  if ($('btnIkuti')) $('btnIkuti').classList.remove('nyala');
+  S.peta.fitBounds(L.latLngBounds([p.h.minLat, p.h.minLon], [p.h.maxLat, p.h.maxLon]),
+                   { maxZoom: p.h.maxZoom || 18 });
 }
 
 /**
@@ -3317,12 +3406,13 @@ function formTambahBasemap() {
 function isiLapisan() {
   var isi = S.overlay.length
     ? S.overlay.map(function (o) {
-        var contohNama = namaFitur((o.geojson.features || [])[0] || {});
+        var fitur = (o.geojson && o.geojson.features) || [];   // lapisan tersembunyi: belum dimuat
+        var contohNama = namaFitur(fitur[0] || {});
         return '<div class="ov-baris" data-id="' + o.id + '">' +
           '<div class="ov-atas">' +
             '<span class="ov-warna" style="background:' + o.warna + '"></span>' +
             '<div class="ov-nama"><b>' + esc(o.nama) + '</b>' +
-            '<small>' + esc(o.jenis.toUpperCase()) + ' &middot; ' + o.geojson.features.length + ' fitur</small></div>' +
+            '<small>' + esc(o.jenis.toUpperCase()) + ' &middot; ' + (o.geojson ? fitur.length + ' fitur' : 'tersimpan di perangkat') + '</small></div>' +
             '<button class="btn btn-kecil" data-lihat="' + o.id + '">Zoom</button>' +
             '<button class="btn btn-kecil ' + (o.tampil ? 'btn-utama' : '') + '" data-toggle="' + o.id + '">' +
             (o.tampil ? 'Tampil' : 'Sembunyi') + '</button>' +
@@ -3987,6 +4077,8 @@ function isiPetaDasar() {
   }
 
   isi += '<div style="margin-top:14px;border-top:1px solid var(--garis);padding-top:12px">' +
+    (S.pmAktif ? '<button class="btn btn-utama btn-lebar" id="bmZoomCitra" style="margin-top:0;margin-bottom:8px">' +
+      'Zoom ke citra &ldquo;' + esc(S.pmAktif.nama) + '&rdquo;</button>' : '') +
     '<button class="btn btn-lebar" id="bmDiag" style="margin-top:0">Diagnostik peta</button>' +
     '<button class="btn btn-lebar" id="bmTambah">+ Tambah peta (XYZ / ArcGIS REST)</button>' +
     '<button class="btn btn-utama btn-lebar" id="mbMuat" style="margin-top:8px">' +
@@ -4006,6 +4098,7 @@ function isiPetaDasar() {
 }
 
 function pasangAksiPetaDasar() {
+  if ($('bmZoomCitra')) $('bmZoomCitra').onclick = function () { tutupLembar(); zoomKeCitra(); };
   Array.prototype.forEach.call($('lembarIsi').querySelectorAll('.pilih-peta'), function (b) {
     b.onclick = function (e) {
       if (e.target.hasAttribute('data-hapus-bm')) return;
