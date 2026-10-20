@@ -553,7 +553,7 @@ textarea.inp{min-height:72px;resize:vertical}
 
       <button id="btnLogin" class="btn btn-utama btn-lebar">Masuk</button>
       <p id="loginPesan" class="pesan-galat"></p>
-      <p class="jejak">Versi 5.2.1 · Data tersimpan di Google Sheets
+      <p class="jejak">Versi 5.2.2 · Data tersimpan di Google Sheets
         <span id="gantiApi" class="tersembunyi"> · <a href="#" id="lnkGantiApi">ganti server</a></span></p>
       </div>
     </div>
@@ -741,7 +741,7 @@ textarea.inp{min-height:72px;resize:vertical}
        ISI BAGIAN INI SEBELUM MENGUNGGAH KE GITHUB
        GAS_API_URL = URL deployment Web App Apps Script Anda (akhiran /exec).
        ==================================================================== */
-    window.GAS_API_URL = ''; // contoh: 'https://script.google.com/macros/s/AKfycb.../exec'
+    window.GAS_API_URL = 'https://script.google.com/macros/s/AKfycbwESav0UT7xNOLepoxBC-PehGBU10EHk2MNssHXlS668_vN76IzgxeFuIPIbOw-39Btfw/exec'; // contoh: 'https://script.google.com/macros/s/AKfycb.../exec'
 
     window.BOOT = {
       app_name: 'GeoUkur GPS',
@@ -753,7 +753,7 @@ textarea.inp{min-height:72px;resize:vertical}
       toleransi_akurasi: 10,
       label_tiap: 5
     };
-    window.APP_VERSION = '5.2.1';
+    window.APP_VERSION = '5.2.2';
   </script>
 <script>
 /* ============================================================
@@ -762,12 +762,160 @@ textarea.inp{min-height:72px;resize:vertical}
 (function () {
 'use strict';
 
+/* ============================================================
+   PENYIMPANAN LOKAL BERPAGAR
+   ------------------------------------------------------------
+   localStorage di browser hanya ~5 MB untuk SELURUH aplikasi. Dulu lapisan
+   peta (PDF sebagai gambar, SHP/KML) ikut ditaruh di sana, sehingga satu
+   berkas besar bisa menghabiskan kuota — dan saat itu terjadi, penulisan
+   sekecil apa pun ikut gagal, termasuk menyimpan token login. Akibatnya
+   aplikasi tidak bisa dibuka sama sekali:
+       "Failed to execute 'setItem' ... 'gu_token' exceeded the quota."
+
+   Dua pagar dipasang:
+   1. Data besar (gambar PDF, geometri overlay, berkas GeoTIFF/MBTiles)
+      TIDAK lagi di localStorage, melainkan di IndexedDB yang kapasitasnya
+      ratusan MB. localStorage hanya menyimpan metadata kecil.
+   2. simpanLokal() menggantikan simpanLokal(). Bila kuota penuh,
+      salinan yang bisa diambil ulang dari server dibuang satu per satu
+      sampai muat. Untuk kunci inti (token/akun/konfigurasi), langkah
+      terakhir membuang semua yang bukan inti — jadi login TIDAK PERNAH
+      bisa gagal gara-gara penyimpanan penuh.
+   ============================================================ */
+
+/** Kunci yang tidak boleh dibuang otomatis: identitas sesi & data belum tersinkron. */
+var KUNCI_INTI = ['gu_token', 'gu_pengguna', 'gu_config', 'gu_lisensi', 'gu_api',
+                  'gu_device', 'gu_antrean', 'gu_kunci', 'gu_sampel', 'gu_basemap'];
+var BUDGET_AVATAR = 400 * 1024;   // total foto profil yang boleh menetap di localStorage
+var MAKS_CACHE_LAHAN = 8;         // salinan detail bidang yang disimpan untuk mode offline
+
+function kunciLokal() {
+  var a = [];
+  try { for (var i = 0; i < localStorage.length; i++) a.push(localStorage.key(i)); } catch (e) {}
+  return a;
+}
+
+/** Perkiraan byte yang dipakai satu kunci (localStorage menyimpan UTF-16). */
+function ukuranKunci(k) {
+  var v;
+  try { v = localStorage.getItem(k); } catch (e) { return 0; }
+  return ((k || '').length + (v || '').length) * 2;
+}
+function ukuranLokal() {
+  return kunciLokal().reduce(function (t, k) { return t + ukuranKunci(k); }, 0);
+}
+
+/** Urutan pengorbanan: paling boros & paling mudah dibuat ulang lebih dulu. */
+function antreanBuang(kecuali) {
+  var cache = [], sisa = [];
+  var prioritas = ['gu_pdf_peta', 'gu_overlay', 'gu_avatar', 'gu_dibaca'];
+  kunciLokal().forEach(function (k) {
+    if (k === kecuali || KUNCI_INTI.indexOf(k) >= 0) return;
+    if (k.indexOf('gu_cache_') === 0) cache.push(k); else sisa.push(k);
+  });
+  cache.sort(function (a, b) { return ukuranKunci(b) - ukuranKunci(a); });
+  sisa.sort(function (a, b) {
+    var pa = prioritas.indexOf(a), pb = prioritas.indexOf(b);
+    if (pa !== pb) return (pa < 0 ? 99 : pa) - (pb < 0 ? 99 : pb);
+    return ukuranKunci(b) - ukuranKunci(a);
+  });
+  return cache.concat(sisa);
+}
+
+/** Pengganti localStorage.setItem yang tidak pernah mengunci aplikasi. true bila tersimpan. */
+function simpanLokal(kunci, nilai) {
+  // Di DALAM fungsi ini sengaja dipakai localStorage.setItem mentah; di tempat lain
+  // seluruh penulisan harus lewat simpanLokal().
+  var tulis = function () {
+    try { localStorage.setItem(kunci, nilai); return true; } catch (e) { return false; }
+  };
+  if (tulis()) return true;
+
+  var antre = antreanBuang(kunci), i;
+  for (i = 0; i < antre.length; i++) {
+    hapusLokal(antre[i]);
+    if (tulis()) return true;
+  }
+  if (KUNCI_INTI.indexOf(kunci) >= 0) {     // demi login: korbankan sisanya
+    kunciLokal().forEach(function (k) {
+      if (k !== kunci && KUNCI_INTI.indexOf(k) < 0) hapusLokal(k);
+    });
+    if (tulis()) return true;
+  }
+  return false;
+}
+
+function hapusLokal(kunci) { try { localStorage.removeItem(kunci); } catch (e) {} }
+
+/** getItem + JSON.parse yang aman terhadap isi rusak. */
+function bacaLokal(kunci, bawaan) {
+  try {
+    var v = localStorage.getItem(kunci);
+    return v === null || v === '' ? bawaan : JSON.parse(v);
+  } catch (e) { return bawaan; }
+}
+
+/** Buang salinan yang bisa diambil ulang. agresif=true juga membuang metadata lapisan peta. */
+function bersihkanRuang(agresif) {
+  var antre = antreanBuang('');
+  var target = agresif ? antre : antre.filter(function (k) {
+    return k.indexOf('gu_cache_') === 0 || k === 'gu_avatar' || k === 'gu_dibaca';
+  });
+  target.forEach(hapusLokal);
+  return target.length;
+}
+
+/** Masih muat untuk menulis token & profil? Dipanggil sekali saat aplikasi mulai. */
+function ruangCukup() {
+  var uji = 'gu_uji', muatan = new Array(20001).join('x');   // ~40 KB
+  try { localStorage.setItem(uji, muatan); localStorage.removeItem(uji); return true; }
+  catch (e) { hapusLokal(uji); return false; }
+}
+
+/**
+ * Pulihkan perangkat yang penyimpanannya sudah telanjur penuh — termasuk perangkat
+ * yang sebelumnya tidak bisa login sama sekali.
+ */
+function periksaRuang() {
+  if (ruangCukup()) return;
+  var sebelum = ukuranLokal();
+  bersihkanRuang(false);
+  if (!ruangCukup()) bersihkanRuang(true);
+  var lega = Math.max(0, Math.round((sebelum - ukuranLokal()) / 1024));
+  setTimeout(function () {
+    toast('Penyimpanan perangkat penuh — salinan peta & data offline dibersihkan (' + lega +
+          ' KB). Data di server tidak terpengaruh.', 'galat');
+  }, 400);
+}
+
+/** Simpan detail bidang untuk mode offline, dibatasi agar tidak menggerus kuota. */
+function simpanCacheLahan(id, data) {
+  var idx = bacaLokal('gu_cache_idx', []).filter(function (x) { return x !== id; });
+  idx.push(id);
+  while (idx.length > MAKS_CACHE_LAHAN) hapusLokal('gu_cache_' + idx.shift());
+  simpanLokal('gu_cache_idx', JSON.stringify(idx));
+  simpanLokal('gu_cache_' + id, JSON.stringify(data));
+}
+
+/** Foto profil rekan: berguna tapi bukan data penting, jadi dibatasi anggarannya. */
+function simpanAvatar() {
+  var k = Object.keys(S.avatar), total = 0, simpan = {};
+  for (var i = k.length - 1; i >= 0; i--) {        // entri terbaru diutamakan
+    var a = S.avatar[k[i]] || {};
+    var besar = (a.foto || '').length;
+    if (besar && total + besar > BUDGET_AVATAR) continue;   // dilewati; nanti diambil lagi dari server
+    total += besar;
+    simpan[k[i]] = a;
+  }
+  simpanLokal('gu_avatar', JSON.stringify(simpan));
+}
+
 /* ---------- STATE ---------- */
 var S = {
   token: localStorage.getItem('gu_token') || '',
-  pengguna: JSON.parse(localStorage.getItem('gu_pengguna') || 'null'),
+  pengguna: bacaLokal('gu_pengguna', null),
   config: window.BOOT || {},
-  lisensi: JSON.parse(localStorage.getItem('gu_lisensi') || 'null'),
+  lisensi: bacaLokal('gu_lisensi', null),
   lahan: [],
   aktif: null,          // { lahan, titik[], lampiran[], log[] }
   peta: null,
@@ -784,13 +932,13 @@ var S = {
   // Kolaborasi
   deviceId: localStorage.getItem('gu_device') ||
             (function () { var d = 'dev_' + Math.random().toString(36).slice(2, 10);
-                           localStorage.setItem('gu_device', d); return d; })(),
+                           simpanLokal('gu_device', d); return d; })(),
   kolaborasi: localStorage.getItem('gu_kolab') === '1',
   berbagiLokasi: localStorage.getItem('gu_berbagi') !== '0',
   lapisRekan: null,
   lapisTetangga: null,
   cacheTetangga: {},   // lahan_id -> { versi, poly, info }
-  avatar: JSON.parse(localStorage.getItem('gu_avatar') || '{}'), // username -> {foto, nama, role}
+  avatar: bacaLokal('gu_avatar', {}),   // username -> {foto, nama, role}
   konflik: [],
   tumpangDitutup: '',
   timerDenyut: null,
@@ -798,7 +946,7 @@ var S = {
   // Obrolan
   ruangAktif: 'umum',
   pesan: { umum: [], lahan: [] },
-  dibaca: JSON.parse(localStorage.getItem('gu_dibaca') || '{}'),  // ruang -> waktu pesan terakhir dibaca
+  dibaca: bacaLokal('gu_dibaca', {}),   // ruang -> waktu pesan terakhir dibaca
   baruUmum: 0,
   baruLahan: 0,
   timerObrolan: null,
@@ -807,16 +955,16 @@ var S = {
   autoJarak: 10,
   titikAutoTerakhir: null,
   watchId: null,
-  antrean: JSON.parse(localStorage.getItem('gu_antrean') || '[]'),
+  antrean: bacaLokal('gu_antrean', []),
   online: navigator.onLine,
   basemapIdx: 0,
-  basemapKustom: JSON.parse(localStorage.getItem('gu_basemap_kustom') || '[]'), // {nama,url,jenis,maks}
-  overlay: JSON.parse(localStorage.getItem('gu_overlay') || '[]'),  // {id,nama,jenis,data|url,warna,tampil}
+  basemapKustom: bacaLokal('gu_basemap_kustom', []),   // {nama,url,jenis,maks}
+  overlay: bacaLokal('gu_overlay', []),   // metadata saja; geometri ada di IndexedDB
   lapisOverlay: {},   // id -> layer Leaflet (label menempel di layer ini)
   lapisObjek: null,   // layer POI + jalur
-  pdfPeta: JSON.parse(localStorage.getItem('gu_pdf_peta') || '[]'),  // lapisan PDF
+  pdfPeta: bacaLokal('gu_pdf_peta', []),  // metadata saja; gambar ada di IndexedDB
   lapisPdf: {},       // id -> L.imageOverlay
-  tifPeta: JSON.parse(localStorage.getItem('gu_tif_peta') || '[]'),  // lapisan GeoTIFF
+  tifPeta: bacaLokal('gu_tif_peta', []),  // metadata saja; berkas ada di IndexedDB
   lapisTif: {},       // id -> GeoRasterLayer
   jalurAktif: null,   // jalur yang sedang direkam
   timerJalur: null,
@@ -1194,7 +1342,7 @@ function tumpangTindih(A, B) {
 
 /* ---------- ANTREAN OFFLINE ---------- */
 function simpanAntrean() {
-  localStorage.setItem('gu_antrean', JSON.stringify(S.antrean));
+  simpanLokal('gu_antrean', JSON.stringify(S.antrean));
   var n = S.antrean.length;
   $('bilahAntrean').classList.toggle('tersembunyi', n === 0);
   $('teksAntrean').textContent = n + ' perubahan menunggu sinkron';
@@ -1248,11 +1396,15 @@ function masuk() {
     .then(function (d) {
       S.generasi++;               // mulai generasi baru; sisa permintaan lama diabaikan
       S.token = d.token; S.pengguna = d.pengguna; S.config = d.config;
-      if (d.lisensi) { S.lisensi = d.lisensi; localStorage.setItem('gu_lisensi', JSON.stringify(d.lisensi)); }
-      localStorage.setItem('gu_token', d.token);
-      localStorage.setItem('gu_pengguna', JSON.stringify(d.pengguna));
-      localStorage.setItem('gu_config', JSON.stringify(d.config));
+      if (d.lisensi) { S.lisensi = d.lisensi; simpanLokal('gu_lisensi', JSON.stringify(d.lisensi)); }
+      var tersimpan = simpanLokal('gu_token', d.token);
+      simpanLokal('gu_pengguna', JSON.stringify(d.pengguna));
+      simpanLokal('gu_config', JSON.stringify(d.config));
       mulaiAplikasi();
+      if (!tersimpan) {
+        toast('Penyimpanan perangkat penuh — sesi ini tidak tersimpan, jadi Anda perlu masuk lagi ' +
+              'setelah aplikasi ditutup. Buka Pengaturan — Penyimpanan untuk membersihkan.', 'galat');
+      }
     })
     .catch(function (e) {
       if (String(e.message).indexOf('[SESI-AKTIF]') === 0) {
@@ -1351,11 +1503,11 @@ function muatBeranda() {
     .then(function (r) {
       gambarStatistik(r[0]);
       S.lahan = r[1];
-      localStorage.setItem('gu_cache_lahan', JSON.stringify(r[1]));
+      simpanLokal('gu_cache_lahan', JSON.stringify(r[1]));
       gambarDaftarLahan();
     })
     .catch(function (e) {
-      var cache = JSON.parse(localStorage.getItem('gu_cache_lahan') || '[]');
+      var cache = bacaLokal('gu_cache_lahan', []);
       if (cache.length) {
         S.lahan = cache; gambarDaftarLahan();
         toast('Menampilkan data tersimpan (mode offline).');
@@ -1469,7 +1621,7 @@ function formLahan(l) {
 function bukaLahan(id, tetapDiHalaman) {
   // Kalau ada salinan tersimpan, TAMPILKAN SEKETIKA lalu segarkan di latar. Sebelumnya
   // setiap buka bidang menunggu jawaban server dulu, jadi terasa ada jeda "Membuka lahan...".
-  var cache = JSON.parse(localStorage.getItem('gu_cache_' + id) || 'null');
+  var cache = bacaLokal('gu_cache_' + id, null);
   var tampilkan = function (d, dariCache) {
     S.aktif = d;
     siapkanPeta();
@@ -1483,12 +1635,20 @@ function bukaLahan(id, tetapDiHalaman) {
 
   return api('detailLahan', { lahan_id: id })
     .then(function (d) {
-      localStorage.setItem('gu_cache_' + id, JSON.stringify(d));
+      simpanCacheLahan(id, d);
       // Kalau data server beda dari cache (atau belum ada cache), perbarui tampilan.
-      var berubah = !cache || JSON.stringify(d) !== JSON.stringify(cache);
-      if (berubah) {
+      if (!cache) {
+        // Belum pernah dibuka di perangkat ini: peta belum dibuat dan halaman belum
+        // berpindah, jadi tampilkan sepenuhnya di sini. (Dulu hanya gambarPeta() yang
+        // dipanggil, dan karena S.peta masih null fungsinya langsung keluar --
+        // ketukan pertama pada sebuah bidang terasa tidak melakukan apa pun.)
+        tampilkan(d, false);
+        perbaruiPapan();
+        return;
+      }
+      if (JSON.stringify(d) !== JSON.stringify(cache)) {
         var sedangDibuka = S.aktif && S.aktif.lahan && S.aktif.lahan.lahan_id === id;
-        if (sedangDibuka || !cache) { S.aktif = d; gambarPeta(false); perbaruiPapan(); }
+        if (sedangDibuka) { S.aktif = d; gambarPeta(false); perbaruiPapan(); }
       }
     })
     .catch(function (e) {
@@ -1542,7 +1702,7 @@ function gantiBasemap(idx) {
       attribution: 'MBTiles offline: ' + esc(S.mbtiles.nama)
     }).addTo(S.peta);
     S.basemapIdx = 'offline';
-    localStorage.setItem('gu_basemap', 'offline');
+    simpanLokal('gu_basemap', 'offline');
     if (S.lapisPoligon) S.lapisPoligon.bringToFront();
     return;
   }
@@ -1593,7 +1753,7 @@ function gantiBasemap(idx) {
     lapisBasemap.on('tileload', function () { gagal = 0; });
   }
 
-  localStorage.setItem('gu_basemap', String(S.basemapIdx));
+  simpanLokal('gu_basemap', String(S.basemapIdx));
   if (S.lapisPoligon) S.lapisPoligon.bringToFront();
   pasangUlangOverlay();
   pasangUlangPdf();
@@ -1713,7 +1873,7 @@ function panelLisensiAktivasi() {
   api('statusLisensi', {})
     .then(function (l) {
       S.lisensi = l;
-      localStorage.setItem('gu_lisensi', JSON.stringify(l));
+      simpanLokal('gu_lisensi', JSON.stringify(l));
 
       var baris = function (k, v) {
         return '<tr><th>' + k + '</th><td>' + esc(v || '-') + '</td></tr>';
@@ -1793,7 +1953,7 @@ function panelLisensiAktivasi() {
         api('aktifkanLisensi', { kunci: k })
           .then(function (baru) {
             S.lisensi = baru;
-            localStorage.setItem('gu_lisensi', JSON.stringify(baru));
+            simpanLokal('gu_lisensi', JSON.stringify(baru));
             toast('Lisensi aktif untuk ' + baru.klien + ' sampai ' + baru.sampai + '.', 'sukses');
             panelLisensiAktivasi();
             if (halamanAktif === 'Beranda') muatBeranda();
@@ -2232,7 +2392,7 @@ function muatUlangObjek() {
   return api('detailLahan', { lahan_id: S.aktif.lahan.lahan_id })
     .then(function (d) {
       S.aktif = d;
-      localStorage.setItem('gu_cache_' + d.lahan.lahan_id, JSON.stringify(d));
+      simpanCacheLahan(d.lahan.lahan_id, d);
       gambarObjek();
       perbaruiPapan();
     })
@@ -2538,6 +2698,8 @@ function diagnostikPeta() {
       baris('Penyedia berkunci', basemapPenyedia().length ? (S.config.peta_penyedia + ' — aktif') : 'belum diisi') +
       baris('Peta kustom', S.basemapKustom.length + ' tersimpan') +
       baris('Lapisan overlay', S.overlay.length + ' tersimpan') +
+      baris('Penyimpanan terpakai', kb(ukuranLokal()) + ' dari ~5 MB (localStorage)',
+            ukuranLokal() > 4 * 1048576) +
       baris('GPS', pos ? ('aktif, akurasi ' + (pos.accuracy || 0).toFixed(0) + ' m') : 'belum ada posisi', !pos) +
       baris('Posisi terakhir', pos ? (pos.latitude.toFixed(6) + ', ' + pos.longitude.toFixed(6)) : '-') +
       baris('Penanda GPS di peta', S.penandaGps ? 'terpasang' : 'belum', !S.penandaGps) +
@@ -2775,7 +2937,7 @@ function pasangUlangTif() { (S.tifPeta || []).forEach(pasangSatuTif); }
 function simpanDaftarTif() {
   try {
     // Hanya metadatanya di localStorage; isi berkasnya di IndexedDB.
-    localStorage.setItem('gu_tif_peta', JSON.stringify(S.tifPeta));
+    simpanLokal('gu_tif_peta', JSON.stringify(S.tifPeta));
   } catch (e) { /* abaikan */ }
 }
 
@@ -2837,6 +2999,19 @@ function pasangSatuPdf(item) {
   if (S.lapisPdf[item.id]) { S.peta.removeLayer(S.lapisPdf[item.id]); delete S.lapisPdf[item.id]; }
   if (!item.tampil || !S.peta) return;
 
+  // Gambar halaman PDF tinggal di IndexedDB, bukan di localStorage. Isinya baru
+  // diambil saat lapisannya benar-benar dinyalakan.
+  if (!item.gambar) {
+    idbBaca('pdf_' + item.id)
+      .then(function (g) {
+        if (!g) { toast('Gambar lapisan "' + item.nama + '" tidak ada lagi di perangkat ini.', 'galat'); return; }
+        item.gambar = g;
+        pasangSatuPdf(item);
+      })
+      .catch(function () {});
+    return;
+  }
+
   S.lapisPdf[item.id] = L.imageOverlay(item.gambar, item.batas, {
     opacity: item.buram === undefined ? 0.75 : item.buram,
     interactive: false
@@ -2848,17 +3023,17 @@ function pasangSatuPdf(item) {
 
 function pasangUlangPdf() { (S.pdfPeta || []).forEach(pasangSatuPdf); }
 
+/**
+ * Hanya METADATA yang masuk localStorage. Gambarnya (data URI beberapa MB) disimpan
+ * di IndexedDB dengan kunci 'pdf_<id>' — inilah perbaikan utama untuk galat
+ * "exceeded the quota" yang sempat membuat aplikasi tidak bisa dibuka sama sekali.
+ */
 function simpanPdfPeta() {
-  // Gambar PDF bisa besar (beberapa MB sebagai data URI). localStorage berkapasitas
-  // ~5 MB, jadi bila penuh kami beri tahu dengan jelas daripada gagal diam-diam.
-  try {
-    localStorage.setItem('gu_pdf_peta', JSON.stringify(S.pdfPeta));
-    return true;
-  } catch (e) {
-    toast('Penyimpanan perangkat penuh — lapisan PDF tidak tersimpan permanen. ' +
-          'Hapus lapisan PDF lama lalu coba lagi.', 'galat');
-    return false;
-  }
+  var meta = (S.pdfPeta || []).map(function (p) {
+    return { id: p.id, nama: p.nama, batas: p.batas, buram: p.buram,
+             tampil: p.tampil, otomatis: p.otomatis };
+  });
+  return simpanLokal('gu_pdf_peta', JSON.stringify(meta));
 }
 
 $('inputPdfPeta').onchange = function (e) {
@@ -2887,14 +3062,19 @@ function tambahPdfKePeta(nama, gambar, batas, otomatis) {
     nama: nama, gambar: gambar, batas: batas,
     buram: 0.75, tampil: true, otomatis: !!otomatis
   };
-  S.pdfPeta.push(item);
-  if (!simpanPdfPeta()) S.pdfPeta.pop();
-  pasangSatuPdf(item);
-  try { S.peta.fitBounds(L.latLngBounds(batas).pad(0.1)); } catch (e) {}
-  toast(otomatis
-    ? 'PDF bergeoreferensi terpasang otomatis.'
-    : 'PDF ditempatkan. Sesuaikan batasnya bila perlu.', 'sukses');
-  gambarPilihPeta('lapisan');
+
+  idbTulis('pdf_' + item.id, gambar)
+    .then(function () {
+      S.pdfPeta.push(item);
+      simpanPdfPeta();
+      pasangSatuPdf(item);
+      try { S.peta.fitBounds(L.latLngBounds(batas).pad(0.1)); } catch (e) {}
+      toast(otomatis
+        ? 'PDF bergeoreferensi terpasang otomatis.'
+        : 'PDF ditempatkan. Sesuaikan batasnya bila perlu.', 'sukses');
+      gambarPilihPeta('lapisan');
+    })
+    .catch(function (e) { toast('Gagal menyimpan lapisan PDF: ' + e.message, 'galat'); });
 }
 
 /**
@@ -3127,7 +3307,7 @@ function formTambahBasemap() {
       item.kredit = nama;
     }
     S.basemapKustom.push(item);
-    localStorage.setItem('gu_basemap_kustom', JSON.stringify(S.basemapKustom));
+    simpanLokal('gu_basemap_kustom', JSON.stringify(S.basemapKustom));
     gambarPilihPeta('dasar');
     toast('Peta "' + nama + '" ditambahkan.', 'sukses');
   };
@@ -3295,6 +3475,7 @@ function pasangAksiLapisan() {
       if (S.lapisPdf[p.id]) { S.peta.removeLayer(S.lapisPdf[p.id]); delete S.lapisPdf[p.id]; }
       S.pdfPeta = S.pdfPeta.filter(function (x) { return x.id !== p.id; });
       simpanPdfPeta();
+      idbHapus('pdf_' + p.id);
       gambarPilihPeta('lapisan');
     };
   });
@@ -3321,6 +3502,7 @@ function pasangAksiLapisan() {
       if (S.lapisOverlay[o.id]) { S.peta.removeLayer(S.lapisOverlay[o.id]); delete S.lapisOverlay[o.id]; }
       S.overlay = S.overlay.filter(function (x) { return x.id !== o.id; });
       simpanOverlay();
+      idbHapus('ov_' + o.id);
       gambarPilihPeta('lapisan');
     };
   });
@@ -3332,8 +3514,8 @@ function pasangAksiLapisan() {
       o.label = cb.checked;
       simpanOverlay();
       if (o.tampil) pasangSatuOverlay(o);
-      if (o.label) {
-        var contoh = namaFitur((o.geojson.features || [])[0] || {});
+      if (o.label && o.geojson) {    // geojson mungkin belum dimuat dari IndexedDB
+        var contoh = namaFitur(((o.geojson.features) || [])[0] || {});
         if (!contoh) toast('Tidak ada kolom nama/name di lapisan ini — label tak bisa ditampilkan. Ketuk fitur untuk lihat atributnya.', 'galat');
         else toast('Label blok ditampilkan.');
       }
@@ -3492,18 +3674,34 @@ function tambahOverlayGeojson(nama, jenis, geojson) {
   var warna = warnaOverlay(S.overlay.length);
   var item = { id: id, nama: nama, jenis: jenis, warna: warna, tampil: true, label: false, geojson: geojson };
 
-  S.overlay.push(item);
-  simpanOverlay();
-  pasangSatuOverlay(item);
-  if (S.lapisOverlay[id]) {
-    try { S.peta.fitBounds(S.lapisOverlay[id].getBounds().pad(0.2)); } catch (e) {}
-  }
-  toast('Lapisan "' + nama + '" ditambahkan (' + geojson.features.length + ' fitur).', 'sukses');
+  // Geometri SHP/KML bisa puluhan MB; tempatnya di IndexedDB, bukan localStorage.
+  idbTulis('ov_' + id, geojson)
+    .then(function () {
+      S.overlay.push(item);
+      simpanOverlay();
+      pasangSatuOverlay(item);
+      if (S.lapisOverlay[id]) {
+        try { S.peta.fitBounds(S.lapisOverlay[id].getBounds().pad(0.2)); } catch (e) {}
+      }
+      toast('Lapisan "' + nama + '" ditambahkan (' + geojson.features.length + ' fitur).', 'sukses');
+    })
+    .catch(function (e) { toast('Gagal menyimpan lapisan: ' + e.message, 'galat'); });
 }
 
 function pasangSatuOverlay(item) {
   if (S.lapisOverlay[item.id]) { S.peta.removeLayer(S.lapisOverlay[item.id]); delete S.lapisOverlay[item.id]; }
   if (!item.tampil || !S.peta) return;
+
+  if (!item.geojson) {              // geometri ada di IndexedDB; ambil lalu pasang
+    idbBaca('ov_' + item.id)
+      .then(function (g) {
+        if (!g) { toast('Geometri lapisan "' + item.nama + '" tidak ada lagi di perangkat ini.', 'galat'); return; }
+        item.geojson = g;
+        pasangSatuOverlay(item);
+      })
+      .catch(function () {});
+    return;
+  }
 
   var lapis = L.geoJSON(item.geojson, {
     style: { color: item.warna, weight: 2, fillColor: item.warna, fillOpacity: 0.12 },
@@ -3541,13 +3739,12 @@ function pasangUlangOverlay() {
   S.overlay.forEach(function (o) { pasangSatuOverlay(o); });
 }
 
+/** Metadata saja; geometri tiap lapisan ada di IndexedDB ('ov_<id>'). */
 function simpanOverlay() {
-  // simpan tanpa layer Leaflet-nya
-  try {
-    localStorage.setItem('gu_overlay', JSON.stringify(S.overlay.map(function (o) {
-      return { id: o.id, nama: o.nama, jenis: o.jenis, warna: o.warna, tampil: o.tampil, geojson: o.geojson };
-    })));
-  } catch (e) { toast('Penyimpanan penuh — lapisan mungkin tidak tersimpan permanen.', 'galat'); }
+  return simpanLokal('gu_overlay', JSON.stringify(S.overlay.map(function (o) {
+    return { id: o.id, nama: o.nama, jenis: o.jenis, warna: o.warna,
+             tampil: o.tampil, label: o.label };
+  })));
 }
 
 /* ============================================================
@@ -3825,7 +4022,7 @@ function pasangAksiPetaDasar() {
       var idx = parseInt(b.dataset.hapusBm, 10) - BASEMAP.length;
       if (!confirm('Hapus peta "' + S.basemapKustom[idx].nama + '"?')) return;
       S.basemapKustom.splice(idx, 1);
-      localStorage.setItem('gu_basemap_kustom', JSON.stringify(S.basemapKustom));
+      simpanLokal('gu_basemap_kustom', JSON.stringify(S.basemapKustom));
       if (S.basemapIdx >= daftarBasemap().length) gantiBasemap(0);
       gambarPilihPeta('dasar');
     };
@@ -4009,7 +4206,7 @@ function konfirmasiGeser(penanda, t) {
 /* Kunci titik: saat aktif, penanda sama sekali tidak bisa diseret. */
 $('btnKunci').onclick = function () {
   S.kunciTitik = !S.kunciTitik;
-  localStorage.setItem('gu_kunci', S.kunciTitik ? '1' : '0');
+  simpanLokal('gu_kunci', S.kunciTitik ? '1' : '0');
   $('btnKunci').classList.toggle('nyala', S.kunciTitik);
   $('btnKunci').textContent = S.kunciTitik ? '🔒' : '🔓';
   gambarPinAlat();
@@ -4328,11 +4525,11 @@ $('btnDaftarTitik').onclick = function () {
    ============================================================ */
 var PIN_BAWAAN = ['zoombidang', 'kunci'];
 function bacaPin() {
-  var p = JSON.parse(localStorage.getItem('gu_alat_pin') || 'null');
+  var p = bacaLokal('gu_alat_pin', null);
   return (p || PIN_BAWAAN).slice(0, 2);
 }
-function bacaSembunyi() { return JSON.parse(localStorage.getItem('gu_alat_sembunyi') || '[]'); }
-function bacaUrutan() { return JSON.parse(localStorage.getItem('gu_alat_urut') || '[]'); }
+function bacaSembunyi() { return bacaLokal('gu_alat_sembunyi', []); }
+function bacaUrutan() { return bacaLokal('gu_alat_urut', []); }
 
 /** Semua alat yang tersedia untuk lahan aktif, lengkap dengan label & sub yang sadar-keadaan. */
 function registriAlat() {
@@ -4442,7 +4639,7 @@ function panelSesuaikanAlat() {
     baris +
     '<button class="btn btn-lebar" id="pinReset" style="margin-top:14px">Kembalikan ke bawaan</button>');
 
-  function simpanUrut(ids) { localStorage.setItem('gu_alat_urut', JSON.stringify(ids)); }
+  function simpanUrut(ids) { simpanLokal('gu_alat_urut', JSON.stringify(ids)); }
 
   Array.prototype.forEach.call($('lembarIsi').querySelectorAll('.atur-pin'), function (b) {
     b.onclick = function () {
@@ -4453,7 +4650,7 @@ function panelSesuaikanAlat() {
         if (p.length >= 2) { toast('Maksimal 2 pintasan di peta. Lepas salah satu dulu.', 'galat'); return; }
         p.push(b.dataset.id);
       }
-      localStorage.setItem('gu_alat_pin', JSON.stringify(p));
+      simpanLokal('gu_alat_pin', JSON.stringify(p));
       gambarPinAlat();
       panelSesuaikanAlat();
     };
@@ -4463,7 +4660,7 @@ function panelSesuaikanAlat() {
       var s = bacaSembunyi();
       var i = s.indexOf(b.dataset.id);
       if (i >= 0) s.splice(i, 1); else s.push(b.dataset.id);
-      localStorage.setItem('gu_alat_sembunyi', JSON.stringify(s));
+      simpanLokal('gu_alat_sembunyi', JSON.stringify(s));
       panelSesuaikanAlat();
     };
   });
@@ -4512,7 +4709,7 @@ function jalankanAlat(aksi) {
   if (aksi === 'tap') { tutupLembar(); $('btnModeTap').click(); setTimeout(gambarPinAlat, 0); return; }
   if (aksi === 'berbagi') {
     S.berbagiLokasi = !S.berbagiLokasi;
-    localStorage.setItem('gu_berbagi', S.berbagiLokasi ? '1' : '0');
+    simpanLokal('gu_berbagi', S.berbagiLokasi ? '1' : '0');
     if (!S.berbagiLokasi && navigator.onLine) api('denyut', { device_id: S.deviceId, berbagi: false }).catch(function () {});
     tutupLembar();
     gambarPinAlat();
@@ -4523,7 +4720,7 @@ function jalankanAlat(aksi) {
     var n = prompt('Berapa sampel GPS dirata-ratakan tiap kali merekam titik?\n(1 = cepat, 5-10 = lebih presisi untuk patok)',
       localStorage.getItem('gu_sampel') || '5');
     if (n && parseInt(n, 10) > 0) {
-      localStorage.setItem('gu_sampel', String(parseInt(n, 10)));
+      simpanLokal('gu_sampel', String(parseInt(n, 10)));
       toast('Tiap rekam titik akan memakai ' + parseInt(n, 10) + ' sampel.', 'sukses');
       tutupLembar();
     }
@@ -4807,7 +5004,7 @@ $('inputLogo').onchange = function (e) {
     .then(function (dataUri) { return api('simpanLogo', { data_uri: dataUri }); })
     .then(function () {
       S.config.ada_logo = true;
-      localStorage.setItem('gu_config', JSON.stringify(S.config));
+      simpanLokal('gu_config', JSON.stringify(S.config));
       terapkanMerek();          // logo langsung muncul di header aplikasi
       toast('Logo tersimpan. Muncul di header & kop berita acara.', 'sukses');
       if ($('cPratinjau')) return api('ambilLogo', {}).then(function (d) {
@@ -4834,7 +5031,7 @@ $('inputAvatar').onchange = function (e) {
         S.avatar[S.pengguna.username] = {
           foto: dataUri, nama: S.pengguna.nama_lengkap, role: S.pengguna.role
         };
-        try { localStorage.setItem('gu_avatar', JSON.stringify(S.avatar)); } catch (err) {}
+        simpanAvatar();
         gambarPengaturan();
         toast('Foto profil tersimpan. Rekan akan melihatnya di peta.', 'sukses');
       });
@@ -5004,7 +5201,7 @@ function inisial(nama) {
 
 $('btnKolab').onclick = function () {
   S.kolaborasi = !S.kolaborasi;
-  localStorage.setItem('gu_kolab', S.kolaborasi ? '1' : '0');
+  simpanLokal('gu_kolab', S.kolaborasi ? '1' : '0');
   $('btnKolab').classList.toggle('nyala', S.kolaborasi);
   if (S.kolaborasi) {
     mulaiDenyut();
@@ -5106,7 +5303,7 @@ function pastikanAvatar(usernames) {
   return api('ambilAvatar', { usernames: perlu })
     .then(function (d) {
       Object.keys(d).forEach(function (u) { S.avatar[u] = d[u]; });
-      try { localStorage.setItem('gu_avatar', JSON.stringify(S.avatar)); } catch (e) { /* penuh: abaikan */ }
+      simpanAvatar();
     })
     .catch(function () {});
 }
@@ -5432,7 +5629,7 @@ function tarikPesan(gulungKeBawah, pertamaKali) {
       var isi = S.pesan[kunci];
       if (isi.length) {
         S.dibaca[namaRuang(kunci)] = isi[isi.length - 1].waktu;
-        localStorage.setItem('gu_dibaca', JSON.stringify(S.dibaca));
+        simpanLokal('gu_dibaca', JSON.stringify(S.dibaca));
       }
       if (kunci === 'umum') S.baruUmum = 0; else S.baruLahan = 0;
       perbaruiLencanaPesan();
@@ -5859,6 +6056,7 @@ function gambarPengaturan() {
 
     '<div class="menu-daftar" style="margin-top:14px;background:#fff;border:1px solid var(--garis);border-radius:14px;padding:0 12px">' +
     '<button class="menu-item" id="mSandi"><span class="em">&#128273;</span><span><b>Ganti password</b><small>Ubah kata sandi akun ini</small></span></button>' +
+    '<button class="menu-item" id="mPenyimpanan"><span class="em">&#128190;</span><span><b>Penyimpanan perangkat</b><small>Lihat pemakaian &amp; bersihkan bila penuh</small></span></button>' +
     (S.antrean.length
       ? '<button class="menu-item" id="mSinkron"><span class="em">&#8635;</span><span><b>Sinkronkan sekarang</b><small>' + S.antrean.length + ' perubahan menunggu</small></span></button>'
       : '') +
@@ -5890,7 +6088,7 @@ function gambarPengaturan() {
     api('profilSaya', {})
       .then(function (d) {
         S.avatar[d.username] = { foto: d.foto, nama: d.nama_lengkap, role: d.role };
-        try { localStorage.setItem('gu_avatar', JSON.stringify(S.avatar)); } catch (e) {}
+        simpanAvatar();
         if (halamanAktif === 'Pengaturan') gambarPengaturan();
       })
       .catch(function () {});
@@ -5901,13 +6099,15 @@ function gambarPengaturan() {
     if (a && a.foto) bukaLightbox(a.foto, p.nama_lengkap + ' · ' + p.role);
   };
 
+  $('mPenyimpanan').onclick = panelPenyimpanan;
+
   $('btnFotoProfil').onclick = function () { $('inputAvatar').click(); };
   if ($('btnHapusFoto')) $('btnHapusFoto').onclick = function () {
     if (!confirm('Hapus foto profil Anda?')) return;
     api('simpanFotoProfil', { data_uri: '' })
       .then(function () {
         S.avatar[p.username] = { foto: '', nama: p.nama_lengkap, role: p.role };
-        localStorage.setItem('gu_avatar', JSON.stringify(S.avatar));
+        simpanAvatar();
         gambarPengaturan();
         toast('Foto profil dihapus.');
       })
@@ -5920,7 +6120,7 @@ function gambarPengaturan() {
     api('simpanWa', { wa: wa })
       .then(function (d) {
         S.pengguna.wa = d.wa;
-        localStorage.setItem('gu_user', JSON.stringify(S.pengguna));
+        simpanLokal('gu_user', JSON.stringify(S.pengguna));
         toast(d.wa ? 'Nomor WhatsApp tersimpan: ' + d.wa : 'Nomor WhatsApp dihapus.', 'sukses');
       })
       .catch(function (e) { toast(e.message, 'galat'); })
@@ -6160,7 +6360,7 @@ function panelKonfig() {
       .then(function () {
         S.config.ada_logo = false;
         S.logoData = '';
-        localStorage.setItem('gu_config', JSON.stringify(S.config));
+        simpanLokal('gu_config', JSON.stringify(S.config));
         terapkanMerek();
         $('cLogo').value = '';
         $('cPratinjau').innerHTML = '<span>Belum ada logo</span>';
@@ -6175,7 +6375,7 @@ function panelKonfig() {
     api('simpanKonfigurasi', kumpulkanKonfig())
       .then(function (cfg) {
         S.config = cfg;
-        localStorage.setItem('gu_config', JSON.stringify(cfg));
+        simpanLokal('gu_config', JSON.stringify(cfg));
         terapkanMerek();          // judul, instansi, logo, warna langsung diterapkan
         if (S.peta) gantiBasemap(0);   // daftar peta dasar ikut berubah bila penyedia/kunci diubah
         tutupLembar();
@@ -6221,7 +6421,7 @@ function terapkanMerek() {
 }
 
 function mulaiAplikasi() {
-  var cfgTersimpan = JSON.parse(localStorage.getItem('gu_config') || 'null');
+  var cfgTersimpan = bacaLokal('gu_config', null);
   if (cfgTersimpan) S.config = cfgTersimpan;
 
   terapkanMerek();
@@ -6269,10 +6469,10 @@ $('btnSimpanApi').onclick = function () {
     .then(function (r) { return r.json(); })
     .then(function (res) {
       if (!res || !res.ok) throw new Error((res && res.error) || 'Server membalas hal yang tidak dikenali.');
-      localStorage.setItem('gu_api', url);
+      simpanLokal('gu_api', url);
       if (res.data && res.data.config) {
         S.config = res.data.config;
-        localStorage.setItem('gu_config', JSON.stringify(res.data.config));
+        simpanLokal('gu_config', JSON.stringify(res.data.config));
         $('merekNama').textContent = S.config.app_name || 'GeoUkur GPS';
         $('merekInstansi').textContent = S.config.instansi || 'Sistem Pengukuran Lahan';
       }
@@ -6292,7 +6492,173 @@ $('lnkGantiApi').onclick = function (e) {
   tampilkanSetupApi(true);
 };
 
+/* ============================================================
+   PANEL PENYIMPANAN
+   Jendela kecil untuk melihat apa yang memenuhi penyimpanan perangkat dan
+   membersihkannya tanpa harus "Clear site data" di setelan browser.
+   ============================================================ */
+
+function kb(byte) {
+  if (byte >= 1048576) return (byte / 1048576).toFixed(1) + ' MB';
+  return Math.max(0, Math.round(byte / 1024)) + ' KB';
+}
+
+/** Kelompokkan isi localStorage menjadi kategori yang bisa dimengerti pengguna. */
+function rincianPenyimpanan() {
+  var r = { sesi: 0, cache: 0, lapisan: 0, avatar: 0, antrean: 0, lain: 0, total: 0 };
+  kunciLokal().forEach(function (k) {
+    var u = ukuranKunci(k);
+    r.total += u;
+    if (k === 'gu_antrean') r.antrean += u;
+    else if (k === 'gu_avatar') r.avatar += u;
+    else if (k.indexOf('gu_cache_') === 0) r.cache += u;
+    else if (k === 'gu_pdf_peta' || k === 'gu_overlay' || k === 'gu_tif_peta' ||
+             k === 'gu_basemap_kustom') r.lapisan += u;
+    else if (KUNCI_INTI.indexOf(k) >= 0) r.sesi += u;
+    else r.lain += u;
+  });
+  return r;
+}
+
+function panelPenyimpanan() {
+  var r = rincianPenyimpanan();
+  var baris = function (nama, nilai, ket) {
+    return '<tr><th>' + nama + '</th><td>' + esc(nilai) +
+           (ket ? '<br><small style="color:var(--tinta-3)">' + esc(ket) + '</small>' : '') + '</td></tr>';
+  };
+
+  bukaLembar('Penyimpanan Perangkat',
+    '<table class="tabel-identify">' +
+      baris('Terpakai (localStorage)', kb(r.total), 'Batas browser sekitar 5 MB') +
+      baris('Sesi & konfigurasi', kb(r.sesi), 'Token login, akun, pengaturan — tidak pernah dihapus otomatis') +
+      baris('Antrean belum tersinkron', kb(r.antrean), S.antrean.length + ' perubahan menunggu dikirim ke server') +
+      baris('Salinan bidang (offline)', kb(r.cache), 'Maksimum ' + MAKS_CACHE_LAHAN + ' bidang terakhir') +
+      baris('Foto profil rekan', kb(r.avatar), 'Diambil ulang dari server bila dihapus') +
+      baris('Daftar lapisan peta', kb(r.lapisan), 'Hanya keterangannya; gambar & geometri ada di IndexedDB') +
+      baris('Lainnya', kb(r.lain), 'Preferensi alat, penanda pesan dibaca') +
+      '<tr><th>Seluruh data aplikasi</th><td id="selIdb">menghitung&hellip;</td></tr>' +
+    '</table>' +
+
+    '<p class="jejak" style="text-align:left;line-height:1.55">Gambar PDF, geometri SHP/KML, ' +
+    'citra GeoTIFF dan berkas MBTiles disimpan di <b>IndexedDB</b> yang kapasitasnya jauh lebih besar, ' +
+    'bukan di localStorage. Semua yang bisa dibersihkan di sini ada salinannya di server ' +
+    '&mdash; kecuali antrean yang belum tersinkron.</p>' +
+
+    '<div class="menu-daftar">' +
+      '<button class="menu-item" id="psCache"><span class="em">&#129529;</span><span>' +
+        '<b>Bersihkan salinan bidang</b><small>Hapus data offline; bidang diambil lagi dari server</small></span></button>' +
+      '<button class="menu-item" id="psAvatar"><span class="em">&#128100;</span><span>' +
+        '<b>Bersihkan foto profil tersimpan</b><small>Diambil ulang otomatis saat membuka obrolan</small></span></button>' +
+      '<button class="menu-item" id="psLapisan"><span class="em">&#128506;</span><span>' +
+        '<b>Hapus semua lapisan peta</b><small>PDF, SHP/KML, GeoTIFF &amp; peta offline di perangkat ini</small></span></button>' +
+      '<button class="menu-item" id="psTotal"><span class="em">&#9888;</span><span>' +
+        '<b>Reset penyimpanan aplikasi</b><small>Semua di atas sekaligus; sesi login dipertahankan</small></span></button>' +
+    '</div>' +
+
+    '<div class="aksi-baris"><button class="btn btn-utama" id="psTutup">Tutup</button></div>');
+
+  // Perkiraan pemakaian seluruh situs (localStorage + IndexedDB + cache PWA)
+  if (navigator.storage && navigator.storage.estimate) {
+    navigator.storage.estimate()
+      .then(function (est) {
+        if (!$('selIdb')) return;
+        $('selIdb').innerHTML = esc(kb(est.usage || 0)) +
+          '<br><small style="color:var(--tinta-3)">Termasuk IndexedDB &amp; cache PWA' +
+          (est.quota ? ', kuota ' + esc(kb(est.quota)) : '') + '</small>';
+      })
+      .catch(function () { if ($('selIdb')) $('selIdb').textContent = 'tidak diketahui'; });
+  } else if ($('selIdb')) {
+    $('selIdb').textContent = 'tidak didukung browser ini';
+  }
+
+  var segarkan = function (pesan) { toast(pesan, 'sukses'); panelPenyimpanan(); };
+
+  $('psTutup').onclick = tutupLembar;
+
+  $('psCache').onclick = function () {
+    var n = 0;
+    kunciLokal().forEach(function (k) { if (k.indexOf('gu_cache_') === 0) { hapusLokal(k); n++; } });
+    segarkan(n + ' salinan bidang dihapus.');
+  };
+
+  $('psAvatar').onclick = function () {
+    S.avatar = {}; hapusLokal('gu_avatar');
+    segarkan('Foto profil tersimpan dibersihkan.');
+  };
+
+  $('psLapisan').onclick = function () {
+    if (!confirm('Hapus semua lapisan peta (PDF, SHP/KML, GeoTIFF, peta offline) dari perangkat ini?\n\n' +
+                 'Data lahan di server tidak terpengaruh.')) return;
+    hapusLapisanPeta().then(function () { segarkan('Semua lapisan peta dihapus.'); });
+  };
+
+  $('psTotal').onclick = function () {
+    if (!confirm('Reset penyimpanan aplikasi di perangkat ini?\n\n' +
+                 'Sesi login dan antrean yang belum tersinkron dipertahankan. ' +
+                 'Semua salinan offline, lapisan peta dan preferensi alat dihapus.')) return;
+    hapusLapisanPeta().then(function () {
+      var jaga = ['gu_token', 'gu_pengguna', 'gu_api', 'gu_device', 'gu_antrean', 'gu_config'];
+      kunciLokal().forEach(function (k) { if (jaga.indexOf(k) < 0) hapusLokal(k); });
+      S.avatar = {};
+      segarkan('Penyimpanan aplikasi direset.');
+    });
+  };
+}
+
+/** Lepas & hapus seluruh lapisan peta tambahan, di memori maupun di IndexedDB. */
+function hapusLapisanPeta() {
+  var tugas = [];
+
+  (S.pdfPeta || []).forEach(function (x) {
+    if (S.lapisPdf[x.id] && S.peta) S.peta.removeLayer(S.lapisPdf[x.id]);
+    tugas.push(idbHapus('pdf_' + x.id));
+  });
+  (S.overlay || []).forEach(function (x) {
+    if (S.lapisOverlay[x.id] && S.peta) S.peta.removeLayer(S.lapisOverlay[x.id]);
+    tugas.push(idbHapus('ov_' + x.id));
+  });
+  (S.tifPeta || []).forEach(function (x) {
+    if (S.lapisTif[x.id] && S.peta) S.peta.removeLayer(S.lapisTif[x.id]);
+    tugas.push(idbHapus('tif_' + x.id));
+  });
+  tugas.push(idbHapus('mbtiles'));
+
+  S.pdfPeta = []; S.lapisPdf = {};
+  S.overlay = []; S.lapisOverlay = {};
+  S.tifPeta = []; S.lapisTif = {};
+  S.mbtiles = null; S.mbtilesDicoba = false;
+  hapusLokal('gu_pdf_peta'); hapusLokal('gu_overlay'); hapusLokal('gu_tif_peta');
+  if (localStorage.getItem('gu_basemap') === 'offline') hapusLokal('gu_basemap');
+
+  return Promise.all(tugas.map(function (t) { return t.catch(function () {}); }));
+}
+
+/**
+ * Pindahkan lapisan peta versi lama (gambar PDF & geometri SHP/KML yang dulu ikut
+ * masuk localStorage) ke IndexedDB. Metadata di localStorage ditulis ulang lebih dulu
+ * supaya kuota langsung lega, baru isinya dipindahkan di latar belakang.
+ */
+function migrasiLapisanKeIdb() {
+  var pindah = [];
+  (S.pdfPeta || []).forEach(function (x) { if (x.gambar) pindah.push({ k: 'pdf_' + x.id, v: x.gambar }); });
+  (S.overlay || []).forEach(function (x) { if (x.geojson) pindah.push({ k: 'ov_' + x.id, v: x.geojson }); });
+  if (!pindah.length) return;
+
+  simpanPdfPeta();      // metadata saja: ruang langsung kembali
+  simpanOverlay();
+
+  pindah.reduce(function (rantai, x) {
+    return rantai.then(function () { return idbTulis(x.k, x.v); });
+  }, Promise.resolve()).catch(function () { /* gagal pindah: lapisan hilang, aplikasi tetap jalan */ });
+}
+
 (function boot() {
+  // Dua langkah pemulihan, dijalankan sebelum apa pun menyentuh penyimpanan:
+  // pindahkan data besar keluar dari localStorage, lalu pastikan masih ada ruang
+  // untuk menulis token login.
+  migrasiLapisanKeIdb();
+  periksaRuang();
+
   $('merekNama').textContent = S.config.app_name || 'GeoUkur GPS';
   $('merekInstansi').textContent = S.config.instansi || 'Sistem Pengukuran Lahan';
 
